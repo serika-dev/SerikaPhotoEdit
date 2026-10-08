@@ -27,7 +27,7 @@ Bundled documentation is a packaging-time snapshot. See the [live validation rec
 
 ### Linux x86_64 and aarch64
 
-The successful Linux jobs are [x86_64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352843) and [aarch64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352298). Their packaging revision is `6dd48f7b7b08e19f59c0ba9df7b26f3503e5a40c`. These are the successful Linux jobs within a run whose macOS jobs did not complete package validation; the complete run is not an all-platform success.
+The final Linux packages come from the successful [x86_64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352843) and [aarch64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352298) jobs. Their packaging revision is `6dd48f7b7b08e19f59c0ba9df7b26f3503e5a40c`.
 
 - Both native Ubuntu 24.04 architectures compiled with warnings treated as errors and passed all eight CTest suites: 227 QtTest checks each, with no failures or skips. Qt PDF, Image Formats and LibRaw features were retained. The application dependency versions are Qt 6.8.3, LibRaw 0.21.2 and zlib 1.3; the separately embedded AppImage runtime uses zlib 1.3.2.
 - Both jobs created tar.gz, AppImage and DEB downloads. Clean-environment checks exercised the staged application version, demo screenshot, batch resize/save, SPE reopen/resave and a document screenshot. XCB launch and capture passed under Xvfb.
@@ -39,12 +39,12 @@ The Linux baseline is Ubuntu 24.04/glibc 2.39 on the matching architecture. Qt/a
 
 ### macOS Intel and Apple Silicon
 
-The Apple Silicon job in [its native run](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37786036463) passed, using packaging revision `c4217d8d2c3f13ff525c34766f0bd144bfbce507`. Its containing run is not an all-platform success. Final Intel package validation is awaiting [the dedicated x86_64 retry](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37787300080), using packaging revision `09837e33f211718e346be1bfe32756079608a5b1`.
+The final Mac packages come from the successful [Apple Silicon job](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37786036463/job/113340970033), using packaging revision `c4217d8d2c3f13ff525c34766f0bd144bfbce507`, and [Intel job](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37788919054/job/113350870610), using packaging revision `8f3fbdaccdae57116c21c9264f9c28eae6c4d663`. These job links identify the exact successful evidence for each architecture.
 
-- The native macOS 14 arm64 build passed all eight CTest suites: 227 QtTest checks, with no failures or skips. Its build record identifies Qt 6.8.3, LibRaw 0.22.2 and SDK/system zlib 1.2.12.
-- Both its extracted ZIP and mounted DMG passed version checks, batch resize/invert/save, SPE reopen/resave, native Cocoa demo screenshots and document-reopen screenshots. The build Qt kit and Homebrew Cellar were temporarily hidden while those packaged applications ran with a clean environment and isolated preferences.
-- The arm64 bundle passed strict signature verification and Mach-O architecture/dependency checks. Its dependency manifest records minimum macOS 14.0, tagged application source and the Homebrew source/version inventory. The DMG editor screenshot was visually inspected.
+- The native macOS 14 arm64 and macOS 15 x86_64 builds each passed all eight CTest suites: 227 QtTest checks per architecture, with no failures or skips. Both build records identify Qt 6.8.3, LibRaw 0.22.2 and SDK/system zlib 1.2.12.
+- Both architectures' extracted ZIP and mounted DMG passed version checks, batch resize/invert/save, SPE reopen/resave, native Cocoa demo screenshots and document-reopen screenshots. The build Qt kit and Homebrew Cellar were temporarily hidden while those packaged applications ran with a clean environment and isolated preferences.
+- Both bundles passed strict signature verification and Mach-O architecture/dependency checks. Their manifests record minimum macOS 14.0 for arm64 and 15.0 for x86_64, tagged application source and Homebrew source/version inventories. Both DMG editor screenshots were visually inspected and rendered the full editor/demo.
 
-The bundles use ad-hoc signing without Developer ID signing or Apple notarization. Exact Homebrew dependency versions/source metadata and license files are retained in each app bundle. Native Intel/macOS 15 package evidence will be recorded after its final job completes.
+The bundles use ad-hoc signing without Developer ID signing or Apple notarization. Exact Homebrew dependency versions/source metadata and license files are retained in each app bundle. All four additional native targets have successful build, test and package evidence in the specific jobs linked above.
 
 Full interactive desktop acceptance outside Windows 11, Developer ID signing/notarization and universal Mac builds, normal DEB installation/uninstallation, other OS versions, tablets, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.

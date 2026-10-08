@@ -13,7 +13,7 @@ Downloads belong to the existing [v0.0.1 release](https://github.com/serika-dev/
 | Platform | Downloads | Requirements |
 | --- | --- | --- |
 | Windows x64 | [Portable ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.zip) · [MSI](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.msi) | Windows 11 tested; executable and installer unsigned |
-| macOS Intel | [DMG](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.dmg) · [ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.zip) | macOS 15+ target; exact minimum in the app's dependency manifest |
+| macOS Intel | [DMG](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.dmg) · [ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.zip) | macOS 15+; native x86_64, ad-hoc signed |
 | macOS Apple Silicon | [DMG](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-arm64.dmg) · [ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-arm64.zip) | macOS 14+; native arm64, ad-hoc signed |
 | Linux x86_64 | [AppImage](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-x86_64.AppImage) · [tar.gz](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-x86_64.tar.gz) · [DEB](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-amd64.deb) | Ubuntu 24.04/glibc 2.39 baseline |
 | Linux aarch64 | [AppImage](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-aarch64.AppImage) · [tar.gz](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-aarch64.tar.gz) · [DEB](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-arm64.deb) | Ubuntu 24.04/glibc 2.39 baseline |
@@ -65,7 +65,7 @@ Use a Qt kit and dependencies matching your compiler and architecture. On Window
 | --- | --- | --- |
 | Windows x64 | Qt desktop kit, CMake/Ninja; portable ZIP and WiX 3 MSI | Windows 11 x64 native/package checks; Windows Server 2022 CI build and offscreen tests |
 | Windows ARM64 | Matching ARM64 Qt kit and compiler | No build or device validation |
-| macOS Intel / Apple Silicon | Native x86_64 and arm64 app bundles, DMG and ZIP; `scripts/package-macos.sh` | Apple Silicon/macOS 14 passed 227 checks and ZIP/DMG batch, SPE reopen and Cocoa captures with build dependencies hidden; Intel results are in the live record |
+| macOS Intel / Apple Silicon | Native x86_64 and arm64 app bundles, DMG and ZIP; `scripts/package-macos.sh` | Intel/macOS 15 and Apple Silicon/macOS 14 each passed 227 checks and ZIP/DMG batch, SPE reopen and Cocoa captures with build dependencies hidden |
 | Linux x86_64 / aarch64 | Qt 6.8.3 portable tar.gz, AppImage and DEB; `scripts/package-linux.sh` | Native Ubuntu 24.04 builds, 227 checks each, batch save/reopen, XCB/Xvfb and package smoke checks passed |
 | Alpine / FreeBSD | Native Qt 6.8+ and compiler; Alpine requires `SERIKA_ALPINE=ON` | Experimental, unverified |
 
@@ -73,7 +73,7 @@ Many distributions ship Qt older than 6.8, so check the selected SDK. [Earlier C
 
 ## Validation and limits
 
-The Windows Release build passed with compiler warnings treated as errors. All eight CTest suites passed, with **227 QtTest checks**: 79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows. Counts include lifecycle slots and data-driven rows. Native UI, portable launch, headless batch, ZIP integrity and MSI administrative extraction were also checked. See the [validation record](docs/RELEASE-VALIDATION.md) and [benchmark measurements](docs/performance.json).
+The Windows Release build passed with compiler warnings treated as errors. All eight CTest suites passed, with **227 QtTest checks**: 79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows. Counts include lifecycle slots and data-driven rows. Native UI, portable launch, headless batch, ZIP integrity and MSI administrative extraction were also checked. Native Linux x86_64/aarch64 and macOS Intel/Apple Silicon builds each passed the same 227 checks without failures or skips, plus their package smoke checks. See the [validation record](docs/RELEASE-VALIDATION.md) and [benchmark measurements](docs/performance.json).
 
 Serika does not have full Photoshop parity. Content-aware tools use local CPU algorithms; embedded smart-object subdocuments, comprehensive Adobe descriptors, full typography, CMYK/Lab editing, professional ICC/proof workflows, advanced multi-layer transforms and GPU acceleration remain limited or absent. Many operations allocate full images despite the tiled model; canvas creation is capped at 80 million pixels. Test results cover the exercised behaviors, rather than every image, camera or external PSD/PSB file.
 

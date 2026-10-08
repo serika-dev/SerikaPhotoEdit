@@ -48,7 +48,7 @@ The Windows convenience script also accepts an external SDK:
 
 ## macOS and Linux build
 
-Earlier CI compiled and passed offscreen tests on macOS 14 and Ubuntu 24.04. Native macOS Intel/Apple Silicon and Linux x86_64/aarch64 package jobs record their completed checks in the [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md). Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
+Native macOS Intel/Apple Silicon and Linux x86_64/aarch64 release builds each passed all 227 checks without failures or skips, followed by package smoke checks. Exact successful jobs, dependency versions and package checks are linked in the [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md). Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/Qt/6.8.3/kit" -DSERIKA_WARNINGS_AS_ERRORS=ON
@@ -64,7 +64,7 @@ Select one native Mac target with `-DCMAKE_OSX_ARCHITECTURES=x86_64` or `arm64`.
 
 ## Test a change
 
-CTest runs eight QtTest suites on Qt's offscreen platform: `core`, `io`, `ui`, `canvas`, `actions`, `shortcuts`, `mask` and `workflow`. The Windows 0.0.1 baseline is **227 passing checks**, including lifecycle slots and data rows, with all optional release dependencies present. Other dependency configurations may skip unsupported-format checks.
+CTest runs eight QtTest suites on Qt's offscreen platform: `core`, `io`, `ui`, `canvas`, `actions`, `shortcuts`, `mask` and `workflow`. The verified Windows x64, Linux x86_64/aarch64 and macOS Intel/Apple Silicon 0.0.1 baseline is **227 passing checks** per target, including lifecycle slots and data rows, with all optional release dependencies present. Other dependency configurations may skip unsupported-format checks.
 
 ```sh
 ctest --test-dir build --output-on-failure
