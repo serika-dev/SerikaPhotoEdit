@@ -1,0 +1,170 @@
+name: Unix release packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Existing release tag to compile (packaging comes from this workflow revision)
+        required: true
+        default: v0.0.1
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+            arch: x86_64
+            qt_host: linux
+            qt_arch: linux_gcc_64
+            tool_sha256: 95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6
+            runtime_sha256: 156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074
+          - platform: linux
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            qt_host: linux_arm64
+            qt_arch: linux_gcc_arm64
+            tool_sha256: a595ea34cd6136c7f595e9dcbb16f3e9725d7610efb9e43b38c3c6e86cafc270
+            runtime_sha256: b4ff0030242d0c3bb12ce40541828303cf167493f4793456f0436edd6255c39d
+          - platform: macos
+            runner: macos-15-intel
+            arch: x86_64
+            qt_host: mac
+            qt_arch: clang_64
+            deployment_target: '15.0'
+          - platform: macos
+            runner: macos-14
+            arch: arm64
+            qt_host: mac
+            qt_arch: clang_64
+            deployment_target: '14.0'
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_DIR: ${{ github.workspace }}/release-source
+      BUILD_DIR: ${{ github.workspace }}/release-source/build
+      OUTPUT_DIR: ${{ github.workspace }}/dist
+      RELEASE_ARCH: ${{ matrix.arch }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+    steps:
+      - name: Check out packaging tools
+        uses: actions/checkout@v4
+      - name: Check out the published source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: release-source
+      - name: Install Linux build and packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build patchelf dpkg-dev file python3 xvfb xauth fonts-dejavu-core \
+            libraw-dev zlib1g-dev pkg-config libegl1 libgl1 libopengl0 libfontconfig1 \
+            libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libwayland-client0 \
+            libwayland-cursor0 libwayland-egl1 libdbus-1-3 libsm6 libice6 squashfs-tools
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install libraw pkg-config ninja
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
+        with:
+          version: '6.8.3'
+          host: ${{ matrix.qt_host }}
+          arch: ${{ matrix.qt_arch }}
+          modules: qtimageformats qtpdf
+          cache: true
+      - name: Configure tagged application source
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Release -DSERIKA_WARNINGS_AS_ERRORS=ON)
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            args+=("-DCMAKE_OSX_ARCHITECTURES=$RELEASE_ARCH" "-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET")
+          fi
+          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja "${args[@]}"
+      - name: Build application and tests
+        run: cmake --build "$BUILD_DIR" --parallel 3
+      - name: Test the release build
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure
+      - name: Record source and packaging provenance
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          PACKAGING_COMMIT: ${{ github.sha }}
+        run: |
+          {
+            printf 'Source ref: %s\nSource commit: %s\n' "$SOURCE_REF" "$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+            printf 'Packaging commit: %s\nCI run: %s/%s/actions/runs/%s\n' "$PACKAGING_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'Platform: %s\nArchitecture: %s\nQt: %s\n' "$RUNNER_OS" "$RELEASE_ARCH" "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)"
+            uname -a
+            cmake --version
+            printf 'LibRaw: %s\n' "$(pkg-config --modversion libraw)"
+            if pkg-config --exists zlib; then
+              printf 'zlib: %s\n' "$(pkg-config --modversion zlib)"
+            else
+              printf 'zlib: SDK/system library selected by CMake\n'
+            fi
+          } > "$BUILD_DIR/RELEASE-BUILD-INFO.txt"
+          # Refresh release documentation and notices without changing tagged application code.
+          cp README.md CONTRIBUTING.md CHANGELOG.md "$SOURCE_DIR/"
+          cp -R docs/. "$SOURCE_DIR/docs/"
+          cp -R resources/licenses/. "$SOURCE_DIR/resources/licenses/"
+          git -C "$SOURCE_DIR" diff --exit-code -- src CMakeLists.txt
+      - name: Fetch verified AppImage tools
+        if: runner.os == 'Linux'
+        env:
+          TOOL_SHA256: ${{ matrix.tool_sha256 }}
+          RUNTIME_SHA256: ${{ matrix.runtime_sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimage-tools"
+          tool="$RUNNER_TEMP/appimage-tools/appimagetool-$RELEASE_ARCH.AppImage"
+          runtime="$RUNNER_TEMP/appimage-tools/runtime-$RELEASE_ARCH"
+          curl --fail --location --retry 3 "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$RELEASE_ARCH.AppImage" -o "$tool"
+          curl --fail --location --retry 3 "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$RELEASE_ARCH" -o "$runtime"
+          printf '%s  %s\n%s  %s\n' "$TOOL_SHA256" "$tool" "$RUNTIME_SHA256" "$runtime" | sha256sum --check
+          chmod +x "$tool"
+          printf 'APPIMAGETOOL=%s\nAPPIMAGE_RUNTIME=%s\n' "$tool" "$runtime" >> "$GITHUB_ENV"
+      - name: Package and smoke-test Linux downloads
+        if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh
+      - name: Package macOS downloads
+        if: runner.os == 'macOS'
+        run: bash scripts/package-macos.sh
+      - name: Smoke-test macOS downloads
+        if: runner.os == 'macOS'
+        run: |
+          for package in "$OUTPUT_DIR"/*.zip "$OUTPUT_DIR"/*.dmg; do
+            bash scripts/smoke-macos.sh "$package" "$BUILD_DIR/package-smoke/$(basename "$package")"
+          done
+      - name: Upload validated downloads
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerikaPhotoEdit-${{ matrix.platform }}-${{ matrix.arch }}-release
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload validation records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerikaPhotoEdit-${{ matrix.platform }}-${{ matrix.arch }}-validation
+          path: |
+            release-source/build/*-results.txt
+            release-source/build/RELEASE-BUILD-INFO.txt
+            release-source/build/package-smoke/
+            dist/*smoke*/
+            dist/*-smoke.log
+          if-no-files-found: warn

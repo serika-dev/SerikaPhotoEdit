@@ -19,4 +19,14 @@ The benchmark results are in [performance.json](performance.json): 4000×3000, t
 
 [GitHub Actions](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) compiled and passed offscreen tests, runtime staging and artifact upload on Windows Server 2022, macOS 14 and Ubuntu 24.04. Qt deployment receives an absolute staging path. All three jobs passed.
 
-Interactive native acceptance outside Windows 11, macOS signing/notarization and universal builds, Linux distribution packages, ARM64, other OS versions, tablet hardware, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. No official macOS/Linux release assets are supplied. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.
+## Additional Linux and macOS packages
+
+Validation and publication of the additional platform downloads are **pending**. The [Unix packaging workflow](../.github/workflows/release-unix.yml) targets Ubuntu 24.04 x86_64 and aarch64, macOS 15 Intel and macOS 14 Apple Silicon. It compiles the immutable v0.0.1 application source at commit `73888a8e939b1669dfb7c9928c4910e7e1f7b1c2` with Qt 6.8.3, using current packaging scripts and refreshed documentation/notices. This extends the existing release without changing its tag or application version.
+
+Planned Linux outputs are portable tar.gz, AppImage and DEB for each architecture. Qt and application libraries are bundled, with Ubuntu package copyright texts, common license texts and source/version inventories. The target baseline is Ubuntu 24.04/glibc 2.39; graphics drivers, a desktop session and fonts remain host requirements. AppImage runtime binaries are pinned by SHA-256, with their own license notices.
+
+Planned macOS outputs are DMG and ZIP for each native architecture. Bundled Mach-O code is audited for architecture, external dependencies and minimum OS version. Requested baselines are macOS 15 Intel and macOS 14 Apple Silicon; the bundle minimum is raised if a dependency requires it. Bundles use ad-hoc signing, without Developer ID signing or Apple notarization. Exact Homebrew dependency versions/source metadata and license files are retained in each app bundle.
+
+Build/test results, extracted-package launches, screenshot checks, batch save/reopen checks, dependency audits and final minimum OS versions will be recorded here after the jobs finish. No successful package or native-launch result is claimed while validation is pending.
+
+Full interactive desktop acceptance outside Windows 11, Developer ID signing/notarization and universal Mac builds, normal DEB installation/uninstallation, other OS versions, tablets, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.

@@ -2,6 +2,8 @@
 
 Application code and the original Serika SVG icons are MIT licensed. The prepared Windows release dynamically links the following libraries; users may replace the compatible shared libraries in its bin directory.
 
+Additional Linux/macOS package validation and publication are pending. They use the same Qt 6.8.3 source notices, plus notices for the platform libraries actually bundled. Dependency versions can differ from the Windows table; consult the package manifests rather than assuming one common version.
+
 | Library | Prepared version | License/source |
 | --- | --- | --- |
 | Qt, Qt SVG, Qt Image Formats, Qt PDF | 6.8.3 | LGPL-3.0 and associated third-party terms; [exact-version Qt sources](https://download.qt.io/archive/qt/6.8/6.8.3/single/) and [Qt licensing](https://doc.qt.io/qt-6/licensing.html) |
@@ -16,5 +18,9 @@ License texts are included in `resources/licenses` and installed under `share/se
 `Qt-PDF-6.8.3-THIRD-PARTY-NOTICES.txt` includes the full PDFium and Chromium notices and the source snapshot's Abseil, FreeType, ICU, JPEG, PNG, zlib, Anti-Grain Geometry, Big Integer Library, Little CMS, OpenJPEG and TIFF notices. These files come from commit [`55749ed0af5869215b88007df0cba430746583ae`](https://github.com/qt/qtwebengine-chromium/tree/55749ed0af5869215b88007df0cba430746583ae), the submodule pinned by [Qt WebEngine v6.8.3](https://github.com/qt/qtwebengine/tree/v6.8.3/src/3rdparty). `Qt-6.8.3-NOTICE-SOURCES.json` records each exact upstream file URL and its SHA-256 digest. Separate `PDFium.txt` and `Chromium.txt` copies make their principal notices easy to find. Serika bundles Qt PDF; it does not bundle the Chromium browser.
 
 Portions of this software are copyright (c) the [FreeType Project](https://freetype.org). All rights reserved. This software is based in part on the work of the Independent JPEG Group. No proprietary external codec plug-ins are bundled. The Qt source archive linked above supplies the matching library source; compatible dynamically linked libraries may be replaced without changing the application source.
+
+Linux packaging retains Ubuntu binary/source package versions, source-package links and each owning package's copyright file under `share/serika-photoedit/licenses/linux/`. Referenced common license texts are copied alongside them. `BundledLinuxLibraries.json` records the dependency inventory; glibc and graphics-driver components remain host-provided. AppImages include the separately pinned [type2-runtime](https://github.com/AppImage/type2-runtime/tree/8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa) with `AppImage-type2-runtime.txt` and its embedded-library notices. Runtime binaries are verified by SHA-256 before packaging.
+
+macOS packaging retains Homebrew formula versions, installed license/copyright files and source metadata under `SerikaPhotoEdit.app/Contents/Resources/documentation/licenses/homebrew/`. `Contents/Resources/dependency-manifest.json` records bundled Mach-O libraries, architectures and their minimum macOS versions. The LibRaw dependency closure can include separate JPEG, Little CMS, TIFF and LLVM OpenMP libraries; these are covered by their own package notices. System Apple libraries are supplied by macOS. Full notice coverage and final inventories will be checked before publication.
 
 The PSD/PSB implementation is original code based on the public [Adobe File Formats Specification](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/). No Adobe artwork, editor source or proprietary color profiles are included. Built-in RGB images use Qt's sRGB profile; embedded external ICC profile bytes are retained in native documents.

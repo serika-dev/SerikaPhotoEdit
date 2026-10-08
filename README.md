@@ -8,14 +8,24 @@ An open-source desktop photo editor built with C++20 and Qt 6.8 Widgets. Serika 
 
 ## Download
 
-Get the Windows x64 build from the [v0.0.1 release](https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1):
+Downloads belong to the existing [v0.0.1 release](https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1). Linux and macOS package validation and publication are **pending**; their links below identify the planned assets.
 
-- [Portable ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.zip) — extract the entire archive, then open `bin/SerikaPhotoEdit.exe`.
-- [MSI installer](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.msi) — includes an optional SPE/PSD/PSB file-association feature.
+| Platform | Downloads | Requirements |
+| --- | --- | --- |
+| Windows x64 | [Portable ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.zip) · [MSI](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.msi) | Windows 11 tested; executable and installer unsigned |
+| macOS Intel | [DMG](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.dmg) · [ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-x86_64.zip) | Target macOS 15+; final package validation pending |
+| macOS Apple Silicon | [DMG](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-arm64.dmg) · [ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-macos-arm64.zip) | Target macOS 14+; final package validation pending |
+| Linux x86_64 | [AppImage](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-x86_64.AppImage) · [tar.gz](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-x86_64.tar.gz) · [DEB](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-amd64.deb) | Ubuntu 24.04/glibc 2.39 baseline; package validation pending |
+| Linux aarch64 | [AppImage](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-aarch64.AppImage) · [tar.gz](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-aarch64.tar.gz) · [DEB](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-linux-arm64.deb) | Ubuntu 24.04/glibc 2.39 baseline; package validation pending |
+
 - [Source ZIP](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.zip) or [source tarball](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.tar.gz).
-- [SHA-256 checksums](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SHA256SUMS.txt) for the Windows downloads.
+- [SHA-256 checksums](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SHA256SUMS.txt) for published downloads.
 
-The Windows packages include the required runtime libraries; a separate Qt installation is unnecessary. The executable and MSI are **unsigned**. Windows 11 x64 has native validation; Windows Server 2022 has CI build/offscreen-test coverage. Other Windows versions and ARM64 remain unverified. MSI payload extraction was checked, but normal installation, file-association changes and uninstall still need an acceptance run. [Release notes](docs/releases/0.0.1.md) include validation details.
+Windows: extract the entire ZIP and open `bin/SerikaPhotoEdit.exe`, or use the MSI with its optional SPE/PSD/PSB file-association feature. Runtime libraries are included. MSI payload extraction was checked; normal installation, association changes and uninstall still need acceptance testing.
+
+macOS: choose the package matching your processor, open the DMG and drag `SerikaPhotoEdit.app` to Applications, or extract the ZIP. The planned bundles include Qt and application dependencies and use an ad-hoc signature; they are not Developer ID signed or notarized. macOS may require approval under System Settings → Privacy & Security; see [Apple's opening instructions](https://support.apple.com/en-us/102445).
+
+Linux: make the AppImage executable and run it, or extract the tar.gz and run its top-level `SerikaPhotoEdit` launcher. Install a matching DEB with `sudo apt install ./SerikaPhotoEdit-0.0.1-linux-amd64.deb` (use `arm64` for ARM). These packages bundle Qt and application dependencies; glibc, graphics drivers, a desktop session and fonts remain host requirements. If FUSE is unavailable, an AppImage can run with `--appimage-extract-and-run`. Other distributions and older glibc are unverified. [Release notes](docs/releases/0.0.1.md) record the package checks and limits.
 
 ## Start editing
 
@@ -55,11 +65,11 @@ Use a Qt kit and dependencies matching your compiler and architecture. On Window
 | --- | --- | --- |
 | Windows x64 | Qt desktop kit, CMake/Ninja; portable ZIP and WiX 3 MSI | Windows 11 x64 native/package checks; Windows Server 2022 CI build and offscreen tests |
 | Windows ARM64 | Matching ARM64 Qt kit and compiler | No build or device validation |
-| macOS Intel / Apple Silicon | Qt SDK; app bundle and CPack DMG; `scripts/package-macos.sh` | macOS 14 CI build, offscreen tests and staging passed; native acceptance, universal builds and signing unverified |
-| Linux | Qt 6.8+ SDK/packages; TGZ/DEB/RPM; AppImage, Flatpak and Nix recipes | Ubuntu 24.04 CI build and offscreen tests passed; native acceptance and distribution packages unverified |
+| macOS Intel / Apple Silicon | Native x86_64 and arm64 app bundles, DMG and ZIP; `scripts/package-macos.sh` | Additional package validation pending on macOS 15 Intel and macOS 14 Apple Silicon; previous macOS 14 build/offscreen CI passed |
+| Linux x86_64 / aarch64 | Qt 6.8.3 portable tar.gz, AppImage and DEB; `scripts/package-linux.sh` | Additional package validation pending on native Ubuntu 24.04 runners; previous x86_64 build/offscreen CI passed |
 | Alpine / FreeBSD | Native Qt 6.8+ and compiler; Alpine requires `SERIKA_ALPINE=ON` | Experimental, unverified |
 
-Many distributions ship Qt older than 6.8, so check the selected SDK. [CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. These checks do not establish interactive native acceptance, distribution-package installation or signing. No official macOS/Linux release binaries are supplied for 0.0.1.
+Many distributions ship Qt older than 6.8, so check the selected SDK. [Earlier CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests and runtime staging on Windows Server 2022, macOS 14 and Ubuntu 24.04. The [Unix packaging workflow](.github/workflows/release-unix.yml) compiles the unchanged v0.0.1 application source with current packaging scripts, documentation and notices. Full interactive desktop acceptance, other OS versions, universal Mac binaries and distribution-wide compatibility remain unverified.
 
 ## Validation and limits
 
@@ -76,6 +86,8 @@ Actions are JSON documents with a `steps` array. The [included example](examples
 ```
 
 Run this command from the extracted portable package. Batch writes SPE files, reports invalid parameters or unsupported commands, and rolls back failed playback. GUI recording captures supported commands and accepted settings, rather than arbitrary pointer gestures.
+
+On Linux, pass the same arguments to the package's `SerikaPhotoEdit` launcher. On macOS, the executable is `SerikaPhotoEdit.app/Contents/MacOS/SerikaPhotoEdit`.
 
 ## Contribute and license
 

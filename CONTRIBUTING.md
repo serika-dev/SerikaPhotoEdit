@@ -48,7 +48,7 @@ The Windows convenience script also accepts an external SDK:
 
 ## macOS and Linux build
 
-These are source-build recipes; macOS and Linux have not been compiled or run locally for 0.0.1. Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
+Earlier CI compiled and passed offscreen tests on macOS 14 and Ubuntu 24.04. The additional native macOS Intel/Apple Silicon and Linux x86_64/aarch64 package jobs are pending; their exact evidence belongs in [release validation](docs/RELEASE-VALIDATION.md). Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/Qt/6.8.3/kit" -DSERIKA_WARNINGS_AS_ERRORS=ON
@@ -57,6 +57,10 @@ ctest --test-dir build --output-on-failure
 ```
 
 Alternatively, `./scripts/build-unix.sh -DCMAKE_PREFIX_PATH=/path/to/Qt/kit` configures, builds and tests. Debian-family package names include `libraw-dev`, `zlib1g-dev`, `cmake`, `ninja-build` and `pkg-config`; Qt package names commonly include `qt6-base-dev`, `libqt6svg6-dev` and `qt6-image-formats-plugins`. A newer Qt SDK is required when distribution packages are below 6.8. On macOS, LibRaw and pkg-config can be installed through Homebrew. Universal macOS builds require universal Qt and third-party dependencies; they are not validated.
+
+For Qt 6.8.3, [aqt](https://aqtinstall.readthedocs.io/en/stable/cli.html) provides `linux_gcc_64` under host `linux`, `linux_gcc_arm64` under host `linux_arm64`, and the universal `clang_64` kit under host `mac`. Install `qtimageformats` and `qtpdf` to retain those release features. Native GitHub runner labels are `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel` and `macos-14` (Apple Silicon); see [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
+Select one native Mac target with `-DCMAKE_OSX_ARCHITECTURES=x86_64` or `arm64`. Its deployment target must be at least the minimum required by every bundled dependency. The Unix release workflow requests macOS 15 Intel/macOS 14 ARM and Ubuntu 24.04/glibc 2.39 Linux; older systems and arbitrary distributions are not established by those jobs.
 
 ## Test a change
 
@@ -99,4 +103,8 @@ Windows staging uses `windeployqt` from the same kit used to compile. ZIP packag
 # With WiX 3 installed, omit -SkipMsi to also create the MSI.
 ```
 
-Linux recipes include CPack TGZ/DEB/RPM, `scripts/appimage.sh` with an externally supplied linuxdeploy/Qt plugin, `packaging/flatpak/io.serika.PhotoEdit.yml`, and `packaging/nix/flake.nix`. macOS uses `scripts/package-macos.sh` or CPack DragNDrop; signing/notarization needs the packager's own credentials. Packaging recipes alone do not establish support. Do not publish a platform package without building, exercising and documenting its actual behavior.
+`scripts/package-linux.sh` stages a native Ubuntu 24.04 build, retains Qt/application dependencies and Ubuntu license/source inventories, and creates tar.gz and DEB packages. Set both `APPIMAGETOOL` and `APPIMAGE_RUNTIME` to verified native binaries to add an AppImage. The release workflow pins their SHA-256 hashes and the runtime source provenance. The script exercises extracted packages with clean environment settings, batch save/reopen, screenshots and an XCB display under Xvfb. DEB payload extraction is distinct from installing/uninstalling a package on a user's desktop.
+
+`scripts/package-macos.sh` stages the app, resolves and audits bundled Qt/Homebrew dependencies, selects `RELEASE_ARCH=x86_64` or `arm64`, records the dependency-derived minimum OS version and creates DMG/ZIP packages. Its default signature is ad-hoc; Developer ID signing/notarization requires the packager's own credentials. `scripts/smoke-macos.sh` exercises extracted ZIP and mounted DMG payloads. Full interactive native acceptance still requires a desktop review.
+
+The [Unix release workflow](.github/workflows/release-unix.yml) checks out the existing application release tag separately from the current packaging scripts. It overlays documentation and license files, and verifies that application source and CMake files remain unchanged. Flatpak, Nix, RPM and universal Mac recipes remain separate, unverified routes. Packaging recipes alone do not establish support; record the actual build, dependency and launch results before publishing a package.
