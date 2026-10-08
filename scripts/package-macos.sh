@@ -68,7 +68,9 @@ for plugin in libqcocoa.dylib libqoffscreen.dylib; do
     [ -f "$qt_root/plugins/platforms/$plugin" ] || { echo "Missing Qt platform plugin: $plugin" >&2; exit 1; }
     ditto "$qt_root/plugins/platforms/$plugin" "$bundle/Contents/PlugIns/platforms/$plugin"
 done
-"$deploy_tool" "$bundle" -always-overwrite -no-codesign -verbose=2
+# Qt 6.8.3 has no -no-codesign option; it signs only when an identity is supplied.
+# The dependency rewrite below finishes before our explicit signing pass.
+"$deploy_tool" "$bundle" -always-overwrite -verbose=2
 cat > "$bundle/Contents/Resources/qt.conf" <<'CONF'
 [Paths]
 Plugins = PlugIns
@@ -95,8 +97,14 @@ def dependencies(path):
     return [line.strip().split(" (compatibility version", 1)[0] for line in run("otool", "-L", str(path)).splitlines()[1:] if " (compatibility version" in line]
 def dylib_id(path):
     result = subprocess.run(["otool", "-D", str(path)], capture_output=True, text=True)
-    lines = result.stdout.splitlines()
-    return lines[1].strip() if len(lines) > 1 else None
+    if result.returncode:
+        raise RuntimeError(f"Cannot inspect Mach-O install ID: {path}: {result.stderr}")
+    # Each file is thinned before this query. Executables and MH_BUNDLE plugins
+    # have no LC_ID_DYLIB; framework/dylib binaries have one plain install name.
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip() and not line.rstrip().endswith(":" )]
+    if len(names) > 1:
+        raise RuntimeError(f"Expected one native Mach-O install ID: {path}: {names}")
+    return names[0] if names else None
 def rpaths(path):
     return re.findall(r"cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset", run("otool", "-l", str(path)))
 def inside(path):
