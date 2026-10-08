@@ -2,7 +2,7 @@
 
 ## 0.0.1 — 2026-10-08
 
-Initial public release under the MIT license, with source and Windows x64 portable ZIP/MSI downloads.
+Initial public release under the MIT license, with source and Windows x64 portable ZIP/MSI downloads. The same release also provides verified Linux x86_64/aarch64 tar.gz, AppImage and DEB packages and macOS Apple Silicon DMG/ZIP packages, using unchanged v0.0.1 application source.
 
 ### Added
 
@@ -19,7 +19,8 @@ Initial public release under the MIT license, with source and Windows x64 portab
 
 - Windows 11 x64 Release build passed all eight CTest suites: **227 QtTest checks**, including lifecycle slots and data-driven rows.
 - Portable GUI/batch smoke checks, ZIP integrity and MSI administrative extraction passed. Interactive installation, file associations and uninstall remain unverified.
-- Executable and MSI are unsigned. macOS/Linux/ARM64 recipes have no verified release binaries.
+- Native Ubuntu 24.04 x86_64/aarch64 and macOS 14 Apple Silicon builds each passed all 227 checks without failures or skips. Linux package smoke checks and native arm64 ZIP/DMG batch, SPE reopen and Cocoa screenshot checks passed.
+- Windows executable and MSI are unsigned. Mac bundles use ad-hoc signatures without Developer ID signing/notarization. Final macOS Intel package evidence is recorded in the [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md); Windows ARM64 remains unverified.
 - This early release does not provide full Photoshop parity. Advanced interchange, typography, color-management, semantic content-aware tools and GPU acceleration remain limited or absent.
 
 See the [0.0.1 release notes](docs/releases/0.0.1.md), [validation record](docs/RELEASE-VALIDATION.md) and [implementation status](docs/IMPLEMENTATION-STATUS.md) for details.

@@ -39,7 +39,7 @@ The Linux baseline is Ubuntu 24.04/glibc 2.39 on the matching architecture. Qt/a
 
 ### macOS Intel and Apple Silicon
 
-The Apple Silicon job in [the dedicated native run](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37786036463) passed, using packaging revision `c4217d8d2c3f13ff525c34766f0bd144bfbce507`. The final Intel job is still awaiting completion; the entire run is not yet recorded as successful.
+The Apple Silicon job in [its native run](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37786036463) passed, using packaging revision `c4217d8d2c3f13ff525c34766f0bd144bfbce507`. Its containing run is not an all-platform success. Final Intel package validation is awaiting [the dedicated x86_64 retry](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37787300080), using packaging revision `09837e33f211718e346be1bfe32756079608a5b1`.
 
 - The native macOS 14 arm64 build passed all eight CTest suites: 227 QtTest checks, with no failures or skips. Its build record identifies Qt 6.8.3, LibRaw 0.22.2 and SDK/system zlib 1.2.12.
 - Both its extracted ZIP and mounted DMG passed version checks, batch resize/invert/save, SPE reopen/resave, native Cocoa demo screenshots and document-reopen screenshots. The build Qt kit and Homebrew Cellar were temporarily hidden while those packaged applications ran with a clean environment and isolated preferences.

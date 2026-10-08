@@ -15,16 +15,32 @@ hidden_file="$scratch/hidden-prefixes.txt"
 : > "$hidden_file"
 mountpoint=
 child=
+ci_cellar_privilege_allowed() {
+    [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] || return 1
+    case "$1" in /usr/local/Cellar|/opt/homebrew/Cellar) return 0 ;; *) return 1 ;; esac
+}
 cleanup() {
+    exit_status=$?
+    trap - EXIT HUP INT TERM
     set +e
     if [ -n "$child" ]; then kill "$child" 2>/dev/null; fi
     # Restore ancestors before children if a Qt kit was inside Homebrew's Cellar.
-    /usr/bin/tail -r "$hidden_file" | while IFS='|' read -r original hidden; do
-        [ ! -d "$hidden" ] || /bin/mv "$hidden" "$original"
-    done
+    if ! /usr/bin/tail -r "$hidden_file" | while IFS='|' read -r original hidden privilege; do
+        [ -d "$hidden" ] || continue
+        if [ "$privilege" = sudo ]; then
+            ci_cellar_privilege_allowed "$original" && /usr/bin/sudo -n /bin/mv "$hidden" "$original" || exit 1
+        else
+            /bin/mv "$hidden" "$original" || exit 1
+        fi
+    done; then
+        echo 'Runtime-prefix restoration failed; inspect the recorded isolation paths.' >&2
+        exit_status=1
+    fi
     [ -z "$mountpoint" ] || /usr/bin/hdiutil detach "$mountpoint" >/dev/null
+    exit "$exit_status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 case "$package" in
     *.zip)
         /usr/bin/ditto -x -k "$package" "$scratch/extracted"
@@ -62,13 +78,17 @@ hide_prefix() {
     case "$original" in /|/usr|/usr/local|/opt|/opt/homebrew) echo "Refusing broad runtime-prefix isolation: $original" >&2; exit 1 ;; esac
     hidden="$original.serika-smoke-hidden.$$"
     [ ! -e "$hidden" ] || { echo "Isolation target already exists: $hidden" >&2; exit 1; }
+    privilege=normal
     if /bin/mv "$original" "$hidden"; then
-        printf '%s|%s\n' "$original" "$hidden" >> "$hidden_file"
-        printf 'Temporarily hid %s\n' "$original" >> "$output/isolation.log"
+        :
+    elif ci_cellar_privilege_allowed "$original" && /usr/bin/sudo -n /bin/mv "$original" "$hidden"; then
+        privilege=sudo
     else
         echo "Could not isolate runtime prefix: $original" >&2
         exit 1
     fi
+    printf '%s|%s|%s\n' "$original" "$hidden" "$privilege" >> "$hidden_file"
+    printf 'Temporarily hid %s (privilege: %s)\n' "$original" "$privilege" >> "$output/isolation.log"
 }
 # Resolve prefixes before hiding them. No Homebrew/Python tools run while hidden.
 cellar=

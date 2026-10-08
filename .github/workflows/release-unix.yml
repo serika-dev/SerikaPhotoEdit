@@ -148,6 +148,17 @@ jobs:
       - name: Package macOS downloads
         if: runner.os == 'macOS'
         run: bash scripts/package-macos.sh
+      - name: Retain macOS candidates for validation recovery
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerikaPhotoEdit-macos-${{ matrix.arch }}-candidate
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
       - name: Smoke-test macOS downloads
         if: runner.os == 'macOS'
         run: |
