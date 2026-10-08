@@ -1,0 +1,40 @@
+app-id: io.serika.PhotoEdit
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+command: SerikaPhotoEdit
+rename-icon: serika-photoedit
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+modules:
+  - name: libraw
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-examples
+      - --disable-openmp
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - '*.la'
+    sources:
+      - type: archive
+        url: https://www.libraw.org/data/LibRaw-0.22.2.zip
+        sha256: f4448371523f9960d26a131ed9dc21bee49f967adbcc4fb6f56b9b47c2ba87c6
+  - name: serika-photoedit
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_TESTING=OFF
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - .tools
+          - build
+          - dist

@@ -1,0 +1,38 @@
+name: Native build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up the MSVC compiler for Ninja
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libraw-dev zlib1g-dev pkg-config libegl1 libfontconfig1 libxcb-cursor0 libxkbcommon-x11-0
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install libraw pkg-config
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: qtimageformats
+          cache: true
+      - uses: lukka/get-cmake@latest
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSERIKA_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build --parallel 4
+      - run: ctest --test-dir build --output-on-failure
+      - name: Stage executable, Qt runtime, plugins and licenses
+        run: cmake --install build --prefix stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SerikaPhotoEdit-${{ matrix.os }}
+          path: stage/
+          if-no-files-found: error

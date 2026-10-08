@@ -1,0 +1,6 @@
+/build*/
+/.tools/
+/dist/
+*.user
+*.spe.tmp
+__pycache__/

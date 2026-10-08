@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Serika PhotoEdit
+Comment=Native photo editing with layers and masks
+Exec=SerikaPhotoEdit %F
+Icon=serika-photoedit
+Terminal=false
+Categories=Graphics;Photography;RasterGraphics;
+MimeType=application/vnd.serika.photoedit;image/vnd.adobe.photoshop;image/png;image/jpeg;image/tiff;image/webp;image/x-adobe-dng;
+StartupNotify=true

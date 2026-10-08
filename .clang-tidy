@@ -1,0 +1,3 @@
+Checks: '-*,bugprone-*,performance-*,modernize-use-nullptr,readability-misleading-indentation'
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/.*'

@@ -1,0 +1,1 @@
+<CPackWiXPatch><CPackWiXFragment Id="#PRODUCT"><Feature Id="SerikaAssociations" Title="Associate SPE, PSD and PSB files" Description="Optionally open layered image documents with Serika PhotoEdit for this user." Level="2" Absent="allow"><ComponentRef Id="SerikaDocumentAssociations"/></Feature></CPackWiXFragment></CPackWiXPatch>

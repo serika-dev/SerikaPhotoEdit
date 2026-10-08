@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info"><mime-type type="application/vnd.serika.photoedit"><comment>Serika PhotoEdit Document</comment><glob pattern="*.spe"/><glob pattern="*.speb"/><magic priority="80"><match type="string" offset="0" value="SPE\0"/></magic></mime-type></mime-info>

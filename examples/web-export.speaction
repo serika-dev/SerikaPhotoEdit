@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Web image preparation",
+  "steps": [
+    {"command": "resize", "parameters": {"width": 1200, "height": 800}},
+    {"command": "adjustment", "name": "Exposure", "parameters": {"destructive": true, "exposure": 0.25, "gamma": 1}}
+  ]
+}
