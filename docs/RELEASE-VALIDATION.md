@@ -17,4 +17,6 @@ Host: Windows 11 x64, AMD Ryzen 5 5500U. Release compiler: MinGW GCC 13.1. Qt 6.
 
 The benchmark results are in [performance.json](performance.json): 4000×3000, ten 8-bit raster layers; 535.47 ms cold composition, 5.24 ms median cached viewport zoom, 4.02 ms brush dab plus dirty-tile rebuild, 453.71 ms redraw after undo. These are CPU measurements of one scenario, not a guarantee for all documents or hardware.
 
-macOS/Linux recipes, ARM64, other Windows versions, tablet hardware, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.
+[GitHub Actions](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) compiled and passed offscreen tests, runtime staging and artifact upload on Windows Server 2022, macOS 14 and Ubuntu 24.04. Qt deployment receives an absolute staging path. All three jobs passed.
+
+Interactive native acceptance outside Windows 11, macOS signing/notarization and universal builds, Linux distribution packages, ARM64, other OS versions, tablet hardware, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. No official macOS/Linux release assets are supplied. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.

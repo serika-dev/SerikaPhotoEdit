@@ -15,11 +15,11 @@ mean that a binary was built, installed or exercised on that platform.
 
 | Platform from the brief | Current evidence |
 | --- | --- |
-| Windows x64 | Host build with Qt 6.8.3 and MinGW; application, engine and automated tests exercised. Exact host package generation and installer validation are recorded separately in the README. |
+| Windows x64 | Windows 11 host build with Qt 6.8.3/MinGW and native application/package checks; Windows Server 2022 CI build and offscreen tests passed. Package/installer scope is recorded in the README. |
 | Windows 10 21H2 / Windows 11 version matrix | Windows source and package configuration present; separate OS-version compatibility runs have not been performed. |
 | Windows ARM64 | CMake configuration is architecture independent; no ARM64 build or device run performed. |
-| macOS 12 through current, Intel / Apple Silicon | Qt bundle, document-type plist and CPack DMG configuration present; no macOS build, universal binary, signing, notarization or installation test performed. |
-| Ubuntu 22.04 / 24.04 / 26.04; Debian 12 / 13; Mint 21 / 22; Pop!_OS 22.04 | Linux dependency/build instructions and DEB/TGZ configuration present; configured, untested on these distributions. |
+| macOS 12 through current, Intel / Apple Silicon | macOS 14 CI build, offscreen tests, staging and artifact upload passed. Other versions, interactive native acceptance, universal binary, signing, notarization and installation are unverified. |
+| Ubuntu 22.04 / 24.04 / 26.04; Debian 12 / 13; Mint 21 / 22; Pop!_OS 22.04 | Ubuntu 24.04 CI build and offscreen tests passed. Interactive native acceptance, distribution packages and other listed distributions are unverified. |
 | Fedora 40 / 41 / 42; openSUSE Leap 15.6 / Tumbleweed | RPM/TGZ configuration present; configured, untested. |
 | Arch / Manjaro; elementary OS 7 / 8; Zorin OS 17 | Generic Qt/CMake Linux build path documented; configured, untested. |
 | NixOS | Nix flake present; not evaluated or built on NixOS. |
@@ -31,6 +31,8 @@ Linux has DEB/RPM/TGZ configuration, an AppImage helper, Flatpak manifest, deskt
 entry and MIME XML. These files are not evidence of completed packages for every
 OS. Platform-specific dependencies and deployment tools must be available on the
 machine producing each package.
+
+[CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. No official macOS/Linux release assets or interactive native acceptance results are claimed.
 
 The viewport and compositor are CPU raster implementations. There is no QRhi,
 OpenGL or Vulkan compositor. Qt supplies the windowing, native dialog, IME and

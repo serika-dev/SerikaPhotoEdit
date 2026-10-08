@@ -15,7 +15,7 @@ Get the Windows x64 build from the [v0.0.1 release](https://github.com/serika-de
 - [Source ZIP](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.zip) or [source tarball](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.tar.gz).
 - [SHA-256 checksums](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SHA256SUMS.txt) for the Windows downloads.
 
-The Windows packages include the required runtime libraries; a separate Qt installation is unnecessary. The executable and MSI are **unsigned**. Windows 11 x64 has been tested; other Windows versions and architectures have not. MSI payload extraction was checked, but normal installation, file-association changes and uninstall still need an acceptance run. [Release notes](docs/releases/0.0.1.md) include validation details.
+The Windows packages include the required runtime libraries; a separate Qt installation is unnecessary. The executable and MSI are **unsigned**. Windows 11 x64 has native validation; Windows Server 2022 has CI build/offscreen-test coverage. Other Windows versions and ARM64 remain unverified. MSI payload extraction was checked, but normal installation, file-association changes and uninstall still need an acceptance run. [Release notes](docs/releases/0.0.1.md) include validation details.
 
 ## Start editing
 
@@ -53,13 +53,13 @@ Use a Qt kit and dependencies matching your compiler and architecture. On Window
 
 | Platform | Build/package route | Verified for 0.0.1 |
 | --- | --- | --- |
-| Windows x64 | Qt desktop kit, CMake/Ninja; portable ZIP and WiX 3 MSI | Windows 11 x64 build, tests and package smoke checks |
+| Windows x64 | Qt desktop kit, CMake/Ninja; portable ZIP and WiX 3 MSI | Windows 11 x64 native/package checks; Windows Server 2022 CI build and offscreen tests |
 | Windows ARM64 | Matching ARM64 Qt kit and compiler | No build or device validation |
-| macOS Intel / Apple Silicon | Qt SDK; app bundle and CPack DMG; `scripts/package-macos.sh` | Recipes only; no binary, signing or notarization validation |
-| Linux | Qt 6.8+ SDK/packages; TGZ/DEB/RPM; AppImage, Flatpak and Nix recipes | Recipes only; no Linux build or runtime validation |
+| macOS Intel / Apple Silicon | Qt SDK; app bundle and CPack DMG; `scripts/package-macos.sh` | macOS 14 CI build, offscreen tests and staging passed; native acceptance, universal builds and signing unverified |
+| Linux | Qt 6.8+ SDK/packages; TGZ/DEB/RPM; AppImage, Flatpak and Nix recipes | Ubuntu 24.04 CI build and offscreen tests passed; native acceptance and distribution packages unverified |
 | Alpine / FreeBSD | Native Qt 6.8+ and compiler; Alpine requires `SERIKA_ALPINE=ON` | Experimental, unverified |
 
-Many distributions ship Qt older than 6.8, so check the selected SDK. The [CI workflow](.github/workflows/build.yml) defines Windows, macOS and Ubuntu jobs; those targets do not establish platform support until their builds and runtime checks pass. No macOS/Linux release binaries are supplied for 0.0.1.
+Many distributions ship Qt older than 6.8, so check the selected SDK. [CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. These checks do not establish interactive native acceptance, distribution-package installation or signing. No official macOS/Linux release binaries are supplied for 0.0.1.
 
 ## Validation and limits
 
