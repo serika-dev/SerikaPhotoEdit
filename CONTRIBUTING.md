@@ -48,7 +48,7 @@ The Windows convenience script also accepts an external SDK:
 
 ## macOS and Linux build
 
-Earlier CI compiled and passed offscreen tests on macOS 14 and Ubuntu 24.04. The additional native macOS Intel/Apple Silicon and Linux x86_64/aarch64 package jobs are pending; their exact evidence belongs in [release validation](docs/RELEASE-VALIDATION.md). Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
+Earlier CI compiled and passed offscreen tests on macOS 14 and Ubuntu 24.04. Native macOS Intel/Apple Silicon and Linux x86_64/aarch64 package jobs record their completed checks in the [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md). Install a compatible compiler, CMake/Ninja, Qt 6.8+ and optional development libraries, then select your Qt kit:
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/Qt/6.8.3/kit" -DSERIKA_WARNINGS_AS_ERRORS=ON

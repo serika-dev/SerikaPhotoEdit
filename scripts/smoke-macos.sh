@@ -54,7 +54,7 @@ pixels = b"".join(b"\0" + b"".join(bytes((240, 80, 24, 255)) if (x // 8 + y // 8
 png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
 (root / "input/fixture.png").write_bytes(png)
 (root / "action.json").write_text(json.dumps({"version": 1, "steps": [{"command": "resize", "parameters": {"width": 64, "height": 64}}, {"command": "adjustment", "name": "Invert", "parameters": {"destructive": True}}]}))
-(root / "reopen.json").write_text(json.dumps({"version": 1, "steps": []}))
+(root / "reopen.json").write_text(json.dumps({"version": 1, "steps": [{"command": "resize", "parameters": {"width": 64, "height": 64, "resample": "nearest"}}]}))
 PY
 hide_prefix() {
     original=$1
@@ -81,7 +81,7 @@ hide_prefix "$qt_prefix"
 run_clean() {
     log=$1
     shift
-    /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$scratch/home" TMPDIR="$scratch/tmp/" LC_ALL=C "$@" > "$log" 2>&1 &
+    /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$scratch/home" TMPDIR="$scratch/tmp/" LC_ALL=en_US.UTF-8 "$@" > "$log" 2>&1 &
     child=$!
     elapsed=0
     while /bin/kill -0 "$child" 2>/dev/null; do

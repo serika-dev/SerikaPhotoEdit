@@ -8,45 +8,46 @@ on:
         required: true
         default: v0.0.1
         type: string
+      platforms:
+        description: Platforms to package
+        required: true
+        default: all
+        type: choice
+        options: [all, linux, macos]
 
 permissions:
   contents: read
 
 jobs:
+  targets:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: select
+        name: Select native build targets
+        env:
+          REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          targets = json.loads(pathlib.Path('.github/release-targets.json').read_text())
+          selected = os.environ['REQUESTED_PLATFORMS']
+          targets = [t for t in targets if selected == 'all' or t['platform'] == selected]
+          if not targets:
+              raise SystemExit('No matching release targets')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': targets}) + '\n')
+          PY
   package:
+    needs: targets
     name: ${{ matrix.platform }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            runner: ubuntu-24.04
-            arch: x86_64
-            qt_host: linux
-            qt_arch: linux_gcc_64
-            tool_sha256: 95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6
-            runtime_sha256: 156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074
-          - platform: linux
-            runner: ubuntu-24.04-arm
-            arch: aarch64
-            qt_host: linux_arm64
-            qt_arch: linux_gcc_arm64
-            tool_sha256: a595ea34cd6136c7f595e9dcbb16f3e9725d7610efb9e43b38c3c6e86cafc270
-            runtime_sha256: b4ff0030242d0c3bb12ce40541828303cf167493f4793456f0436edd6255c39d
-          - platform: macos
-            runner: macos-15-intel
-            arch: x86_64
-            qt_host: mac
-            qt_arch: clang_64
-            deployment_target: '15.0'
-          - platform: macos
-            runner: macos-14
-            arch: arm64
-            qt_host: mac
-            qt_arch: clang_64
-            deployment_target: '14.0'
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     defaults:
       run:
         shell: bash

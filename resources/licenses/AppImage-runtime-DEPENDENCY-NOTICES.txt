@@ -9,7 +9,8 @@ Dockerfile. These copies retain the copyright and redistribution notices for
 the embedded dependencies. The separate AppImage-type2-runtime.txt retains
 the runtime project's principal license. Source URLs and original-file SHA-256
 digests accompany each notice. The SHA-256 covers the complete upstream file;
-for libfuse fuse.c only its leading copyright/license comment is reproduced.
+for libfuse fuse.c and zstd xxhash.h only their leading copyright/license
+comments are reproduced. The zstd LICENSE above also applies to its xxHash copy.
 
 ============================================================================
 musl libc 1.2.5 COPYRIGHT
@@ -1097,3 +1098,20 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+============================================================================
+zstd 1.5.6 bundled xxHash copyright comment
+============================================================================
+Source: https://raw.githubusercontent.com/facebook/zstd/v1.5.6/lib/common/xxhash.h
+Original-file SHA-256: 3b93d3e9d5ae536f05d25e8ff8717c105e2bcd151a802994d2e4870fde14b276
+
+/*
+ * xxHash - Extremely Fast Hash algorithm
+ * Header File
+ * Copyright (c) Yann Collet - Meta Platforms, Inc
+ *
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
+ * You may select, at your option, one of the above-listed licenses.
+ */

@@ -18,13 +18,13 @@ mean that a binary was built, installed or exercised on that platform.
 | Windows x64 | Windows 11 host build with Qt 6.8.3/MinGW and native application/package checks; Windows Server 2022 CI build and offscreen tests passed. Package/installer scope is recorded in the README. |
 | Windows 10 21H2 / Windows 11 version matrix | Windows source and package configuration present; separate OS-version compatibility runs have not been performed. |
 | Windows ARM64 | CMake configuration is architecture independent; no ARM64 build or device run performed. |
-| macOS 12 through current, Intel / Apple Silicon | Earlier macOS 14 CI build/offscreen tests passed. Native Intel/macOS 15 and Apple Silicon/macOS 14 DMG/ZIP validation is pending. Other versions, full interactive acceptance, universal binaries, Developer ID signing/notarization and installation are unverified. |
-| Ubuntu 22.04 / 24.04 / 26.04; Debian 12 / 13; Mint 21 / 22; Pop!_OS 22.04 | Earlier Ubuntu 24.04 x86_64 build/offscreen tests passed. Native Ubuntu 24.04 x86_64/aarch64 tar.gz, AppImage and DEB validation is pending. glibc 2.39 is the package baseline; other listed distributions and normal installation are unverified. |
+| macOS 12 through current, Intel / Apple Silicon | Package jobs target native Intel/macOS 15 and Apple Silicon/macOS 14 DMG/ZIP. See the live validation record for completed checks. Other versions, full interactive acceptance, universal binaries and Developer ID signing/notarization remain unverified. |
+| Ubuntu 22.04 / 24.04 / 26.04; Debian 12 / 13; Mint 21 / 22; Pop!_OS 22.04 | Package jobs target native Ubuntu 24.04 x86_64/aarch64 tar.gz, AppImage and DEB. See the live validation record for completed checks. glibc 2.39 is the baseline; other listed distributions and normal installation are unverified. |
 | Fedora 40 / 41 / 42; openSUSE Leap 15.6 / Tumbleweed | RPM/TGZ configuration present; configured, untested. |
 | Arch / Manjaro; elementary OS 7 / 8; Zorin OS 17 | Generic Qt/CMake Linux build path documented; configured, untested. |
 | NixOS | Nix flake present; not evaluated or built on NixOS. |
 | Alpine / musl | Optional CMake flag and dependency guidance present; no musl build performed. |
-| Linux aarch64 | Native Ubuntu 24.04 ARM64 runner, Qt 6.8.3 kit and release packaging configured; package validation pending. |
+| Linux aarch64 | Native Ubuntu 24.04 ARM64 runner, Qt 6.8.3 kit and release packaging; completed checks are recorded in the live validation record. |
 | FreeBSD 14 | Intended portable Qt/CMake path; no build or runtime validation performed. |
 
 Windows has CPack ZIP/WiX configuration and optional association component sources.
@@ -33,7 +33,7 @@ entry and MIME XML. These files are not evidence of completed packages for every
 OS. Platform-specific dependencies and deployment tools must be available on the
 machine producing each package.
 
-[Earlier CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. The additional Unix package jobs are pending; their [validation record](RELEASE-VALIDATION.md) will distinguish automated package checks from full interactive desktop acceptance. Application source remains the immutable v0.0.1 tag; current packaging scripts overlay updated documentation and dependency notices.
+[Earlier CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. The [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md) distinguishes completed automated package checks from full interactive desktop acceptance. Application source remains the immutable v0.0.1 tag; current packaging scripts overlay updated documentation and dependency notices. Bundled documentation records the state at packaging time.
 
 The viewport and compositor are CPU raster implementations. There is no QRhi,
 OpenGL or Vulkan compositor. Qt supplies the windowing, native dialog, IME and

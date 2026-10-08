@@ -2,7 +2,7 @@
 
 Application code and the original Serika SVG icons are MIT licensed. The prepared Windows release dynamically links the following libraries; users may replace the compatible shared libraries in its bin directory.
 
-Additional Linux/macOS package validation and publication are pending. They use the same Qt 6.8.3 source notices, plus notices for the platform libraries actually bundled. Dependency versions can differ from the Windows table; consult the package manifests rather than assuming one common version.
+Linux/macOS packages use the same Qt 6.8.3 source notices, plus notices for the platform libraries actually bundled. Dependency versions can differ from the Windows table; consult the package manifests rather than assuming one common version. Download availability and completed package checks are recorded on the [live release page](https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1) and [validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md).
 
 | Library | Prepared version | License/source |
 | --- | --- | --- |
@@ -21,6 +21,6 @@ Portions of this software are copyright (c) the [FreeType Project](https://freet
 
 Linux packaging retains Ubuntu binary/source package versions, source-package links and each owning package's copyright file under `share/serika-photoedit/licenses/linux/`. Referenced common license texts are copied alongside them. `BundledLinuxLibraries.json` records the dependency inventory; glibc and graphics-driver components remain host-provided. AppImages include the separately pinned [type2-runtime](https://github.com/AppImage/type2-runtime/tree/8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa) with `AppImage-type2-runtime.txt` and its embedded-library notices. Runtime binaries are verified by SHA-256 before packaging.
 
-macOS packaging retains Homebrew formula versions, installed license/copyright files and source metadata under `SerikaPhotoEdit.app/Contents/Resources/documentation/licenses/homebrew/`. `Contents/Resources/dependency-manifest.json` records bundled Mach-O libraries, architectures and their minimum macOS versions. The LibRaw dependency closure can include separate JPEG, Little CMS, TIFF and LLVM OpenMP libraries; these are covered by their own package notices. System Apple libraries are supplied by macOS. Full notice coverage and final inventories will be checked before publication.
+macOS packaging retains Homebrew formula versions, installed license/copyright files and source metadata under `SerikaPhotoEdit.app/Contents/Resources/documentation/licenses/homebrew/`. `Contents/Resources/dependency-manifest.json` records bundled Mach-O libraries, architectures and their minimum macOS versions. The LibRaw dependency closure can include separate JPEG, Little CMS, TIFF and LLVM OpenMP libraries; these are covered by their own package notices. System Apple libraries are supplied by macOS. The package inventories identify the actual bundled libraries and their corresponding notices.
 
 The PSD/PSB implementation is original code based on the public [Adobe File Formats Specification](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/). No Adobe artwork, editor source or proprietary color profiles are included. Built-in RGB images use Qt's sRGB profile; embedded external ICC profile bytes are retained in native documents.
