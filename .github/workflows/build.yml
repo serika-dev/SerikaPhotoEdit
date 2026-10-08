@@ -59,7 +59,7 @@ jobs:
       - run: cmake --build build --parallel 4
       - run: ctest --test-dir build --output-on-failure
       - name: Stage executable, Qt runtime, plugins and licenses
-        run: cmake --install build --prefix stage
+        run: cmake --install build --prefix "${{ github.workspace }}/stage"
       - uses: actions/upload-artifact@v4
         with:
           name: SerikaPhotoEdit-${{ matrix.os }}
