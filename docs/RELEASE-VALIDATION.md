@@ -1,4 +1,4 @@
-# Release validation — 8 October 2026
+# Release validation — 0.0.1 (8 October 2026)
 
 Host: Windows 11 x64, AMD Ryzen 5 5500U. Release compiler: MinGW GCC 13.1. Qt 6.8.3, LibRaw 0.22.2 and zlib 1.3.1.
 

@@ -1,19 +1,27 @@
 name: Native build
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'resources/licenses/**'
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2022, macos-14, ubuntu-24.04]
+        include:
+          - os: windows-2022
+            qt_arch: win64_mingw
+            qt_tools: tools_mingw1310,qt.tools.win64_mingw1310
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up the MSVC compiler for Ninja
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libraw-dev zlib1g-dev pkg-config libegl1 libfontconfig1 libxcb-cursor0 libxkbcommon-x11-0
@@ -23,9 +31,30 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
+          arch: ${{ matrix.qt_arch }}
+          tools: ${{ matrix.qt_tools }}
+          add-tools-to-path: true
           modules: qtimageformats
           cache: true
       - uses: lukka/get-cmake@latest
+      - name: Select the Qt MinGW 13.1 compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $taskMingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64/bin'
+          $taskGcc = Join-Path $taskMingwBin 'gcc.exe'
+          $taskGxx = Join-Path $taskMingwBin 'g++.exe'
+          if (!(Test-Path -LiteralPath $taskGcc) -or !(Test-Path -LiteralPath $taskGxx)) {
+            throw "Qt's MinGW 13.1 compiler was not installed in $taskMingwBin"
+          }
+          $taskVersion = & $taskGxx -dumpfullversion
+          if ($LASTEXITCODE -ne 0 -or $taskVersion -ne '13.1.0') {
+            throw "Expected MinGW 13.1.0; found $taskVersion"
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $taskMingwBin
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "CC=$taskGcc"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "CXX=$taskGxx"
+          & $taskGxx --version
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSERIKA_WARNINGS_AS_ERRORS=ON
       - run: cmake --build build --parallel 4
       - run: ctest --test-dir build --output-on-failure

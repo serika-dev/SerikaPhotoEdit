@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
 #endif
     QApplication app(argc, argv);
     app.setApplicationName("SerikaPhotoEdit");
-    app.setApplicationVersion("1.0.0-ultra");
+    app.setApplicationVersion("0.0.1");
     app.setOrganizationName("Serika");
     app.setOrganizationDomain("serika.app");
     app.setStyle("Fusion");

@@ -4,3 +4,4 @@
 *.user
 *.spe.tmp
 __pycache__/
+*.log

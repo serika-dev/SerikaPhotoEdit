@@ -483,7 +483,7 @@ void MainWindow::buildHome() {
     }
     bl->addWidget(recents);
     bl->addStretch();
-    auto *footer = new QLabel("1.0.0-ultra  ·  Made for the desktop");
+    auto *footer = new QLabel("0.0.1  ·  Made for the desktop");
     footer->setObjectName("muted");
     bl->addWidget(footer);
     outer->addWidget(body, 1);

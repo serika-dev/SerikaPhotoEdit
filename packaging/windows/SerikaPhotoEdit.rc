@@ -1,7 +1,7 @@
 1 ICON "serika.ico"
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 0,0,1,0
+PRODUCTVERSION 0,0,1,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -13,9 +13,9 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Serika"
    VALUE "FileDescription", "Serika PhotoEdit"
-   VALUE "FileVersion", "1.0.0-ultra"
+   VALUE "FileVersion", "0.0.1"
    VALUE "ProductName", "Serika PhotoEdit"
-   VALUE "ProductVersion", "1.0.0-ultra"
+   VALUE "ProductVersion", "0.0.1"
   END
  END
  BLOCK "VarFileInfo"

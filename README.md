@@ -1,125 +1,84 @@
 # Serika PhotoEdit
 
-A native C++20 / Qt 6.8 Widgets image editor, version **1.0.0-ultra**. Original Serika icons, fox-amber accents, four interface themes, a tiled layer engine and real editing tools.
+An open-source desktop photo editor built with C++20 and Qt 6.8 Widgets. Serika combines a native, dockable interface with layered editing, high-precision RGB, masks and familiar Photoshop-style shortcuts.
 
-This repository implements a substantial working editor from the supplied brief. It is **not a complete implementation of every acceptance item**. Read [the implementation status](docs/IMPLEMENTATION-STATUS.md) and [format fidelity notes](src/io/README.md) before relying on advanced features or interchange with another editor.
+**Version 0.0.1 is an early release.** It provides working editing workflows, with substantial limits in specialist tools and interchange. See the [implementation status](docs/IMPLEMENTATION-STATUS.md) and [format fidelity notes](src/io/README.md).
 
 ![Serika PhotoEdit editor](docs/screenshots/editor.png)
 
-## Run on this Windows host
+## Download
 
-Double-click `dist/portable/bin/SerikaPhotoEdit.exe`, or install the MSI in `dist`. The portable directory and ZIP include the Qt, MinGW, LibRaw and zlib runtime libraries; a Qt installation is not required to run them.
+Get the Windows x64 build from the [v0.0.1 release](https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1):
 
-```powershell
-./dist/portable/bin/SerikaPhotoEdit.exe
-./dist/portable/bin/SerikaPhotoEdit.exe --demo
-```
+- [Portable ZIP](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.zip) — extract the entire archive, then open `bin/SerikaPhotoEdit.exe`.
+- [MSI installer](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SerikaPhotoEdit-0.0.1-win64.msi) — includes an optional SPE/PSD/PSB file-association feature.
+- [Source ZIP](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.zip) or [source tarball](https://github.com/serika-dev/SerikaPhotoEdit/archive/refs/tags/v0.0.1.tar.gz).
+- [SHA-256 checksums](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/SHA256SUMS.txt) for the Windows downloads.
 
-Home offers an original layered **Amber Valley** project. Open an image, add a layer, choose Brush (`B`), paint, and undo (`Ctrl+Z`). Save layered work as `.spe`; export a flattened image through File → Export. Editable Serika fields exported to PSD use private tags and raster compatibility layers, so use SPE as the master document.
+The Windows packages include the required runtime libraries; a separate Qt installation is unnecessary. The executable and MSI are **unsigned**. Windows 11 x64 has been tested; other Windows versions and architectures have not. MSI payload extraction was checked, but normal installation, file-association changes and uninstall still need an acceptance run. [Release notes](docs/releases/0.0.1.md) include validation details.
 
-## Implemented workflows
+## Start editing
 
-- Native document tabs, detachable windows, dockable panels, resettable workspaces, command palette, recent files, themes and a configurable Photoshop-style shortcut registry with conflict detection, tool cycles, held modifiers and JSON import/export.
-- Sparse 256 × 256 tiles, 8-bit / 16-bit / float RGB, copy-on-write history, selections, masks, pixel / text / shape / group / adjustment / smart-object layer data.
-- CPU compositor with 27 blend modes, clipping, group isolation and pass-through, masks, adjustment layers and layer-effect rendering.
-- Brush, eraser, clone/heal, selection, crop and perspective crop, move, gradient/fill, pen/anchor editing, vector shapes, text, zoom/pan, rulers/guides and interactive Liquify.
-- Native SPE/SPEB with checksums and atomic saving; original PSD/PSB reader/writer; LibRaw RAW import and Develop; common raster formats, TGA, float HDR, SVG rasterization and PDF page import.
-- CPU filters and adjustments, editable retained-source smart-filter stacks, action recording with parameter capture, validated action playback and folder batch processing.
-- Raster/vector masks with density, feather and linking; native 8/16/float selection coverage; Select and Mask preview/edge brush/output modes; persistent selection channels and layer comps.
-- Preview-first crop with ratios, output size, overlays, straighten and automatic bounds detection; inline Free Transform handles; real Patch and Content-Aware Move transport.
+Home includes the original layered **Amber Valley** demo. Open an image, add a layer, choose Brush (`B`), paint, and undo with `Ctrl+Z`. Save layered work as **SPE**; use File → Export for a flattened image. Keep SPE as your master document: PSD export uses raster compatibility layers and private Serika tags for some editable fields.
 
-Several specialist operations use simplified CPU algorithms. The status document lists material limits, including Adobe descriptor fidelity, embedded subdocuments, color modes, advanced typography, GPU acceleration and packaging verification. The shortcut reference is in [docs/KEYBOARD-SHORTCUTS.md](docs/KEYBOARD-SHORTCUTS.md).
+Crop (`C`) previews changes until Enter applies them; Escape cancels. Free Transform (`Ctrl+T`) follows the same commit/cancel pattern. Space temporarily pans, and Alt samples a brush color. Shortcuts can be remapped and exported; see the [keyboard reference](docs/KEYBOARD-SHORTCUTS.md).
 
-## Build
+## Features
 
-Requires CMake ≥ 3.25, Ninja or another CMake generator, a C++20 compiler and **Qt ≥ 6.8** with Core, Gui, Widgets, PrintSupport, Svg and Test. Qt Image Formats adds TIFF/WebP/etc.; Qt Pdf enables PDF import. Dynamically linked LibRaw and zlib are detected when available. Development packages older than Qt 6.8 need a newer Qt SDK.
+- Document tabs, detachable windows, dockable panels, workspaces, command palette, recent files and four themes with original Serika icons.
+- Sparse 256 × 256 tiles; 8-bit, 16-bit and float RGB; copy-on-write history; pixel, text, shape, group, adjustment and smart-object layers.
+- CPU compositing with 27 blend modes, clipping, group isolation/pass-through, adjustments and layer effects.
+- Brush, eraser, clone/heal, gradient/fill, selection and path tools; text and vector shapes; guides, rulers, zoom/pan and interactive Liquify.
+- Raster/vector masks with density, feather and linking; high-precision selection coverage; Select and Mask previews, edge brush and output modes; saved selection channels and layer comps.
+- Crop and perspective crop previews, ratios, output size, overlays, straighten and automatic bounds detection; inline transforms; Patch and Content-Aware Move with actual selection transport.
+- Checksummed, atomically saved SPE/SPEB; original PSD/PSB import/export; LibRaw RAW import and Develop; common raster formats, TGA, float HDR, SVG rasterization and PDF page import.
+- CPU filters, retained-source smart-filter stacks, selectable History Brush sources, Fade, action recording/playback and headless folder batch processing.
+- Configurable Photoshop-style shortcuts with conflict detection, tool scopes, held modifiers, tool cycles and JSON import/export.
 
-The tools prepared on this host are under ignored `.tools`. Rebuild and test here:
+## Build from source
 
-```powershell
-./scripts/build.ps1 -Test
-./scripts/build.ps1 -Test -Package
-```
-
-For a separately installed Qt SDK:
+Requires **CMake 3.25+**, a **C++20 compiler**, Ninja or another CMake generator, and **Qt 6.8+** with Core, Gui, Widgets, PrintSupport, Svg and Test. Qt Image Formats supplies optional image codecs; Qt Pdf enables PDF import. Dynamically linked LibRaw and zlib are detected when available. RAW import is unavailable without LibRaw; `SERIKA_WITH_RAW=OFF` explicitly disables its discovery.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/path/to/Qt/6.8.3/compiler \
-  -DSERIKA_WARNINGS_AS_ERRORS=ON
+git clone https://github.com/serika-dev/SerikaPhotoEdit.git
+cd SerikaPhotoEdit
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="<Qt-kit-directory>" -DSERIKA_WARNINGS_AS_ERRORS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Windows SDK and compiler architectures must match. The verified host uses Qt 6.8.3, MinGW 13.1, LibRaw 0.22.2 and zlib 1.3.1, all x64. To use another compiler or architecture, configure a separate build directory with matching dependencies. `SERIKA_WITH_RAW=OFF` disables LibRaw discovery. Optional codecs are advertised only when a matching Qt image plugin is installed.
+Use a Qt kit and dependencies matching your compiler and architecture. On Windows, put the Qt runtime and matching compiler on PATH; an MSVC build needs a Visual Studio developer shell. The tested configuration is Qt 6.8.3, MinGW GCC 13.1, LibRaw 0.22.2 and zlib 1.3.1, all x64. [CONTRIBUTING.md](CONTRIBUTING.md) provides platform-specific setup, test and packaging commands.
 
-## Platform and packaging coverage
+## Platform coverage
 
-Only **Windows 11 x64** has been compiled, tested and packaged in this workspace. Other rows are source/build targets and recipes, not verified release binaries. The GitHub Actions workflow defines Windows, macOS and Ubuntu builds; it has not been run remotely in this session.
-
-| Platform requested in the brief | Route | Verification |
+| Platform | Build/package route | Verified for 0.0.1 |
 | --- | --- | --- |
-| Windows 10/11 x64 | Qt 6.8 SDK; Ninja; `scripts/package-windows.ps1`; portable ZIP and WiX MSI | Windows 11 x64 verified |
-| Windows ARM64 | Matching native ARM64 Qt and compiler; same CMake project | Unverified; no ARM64 binary supplied |
-| macOS 12+ Intel / Apple Silicon | Qt 6.8 SDK; CMake app bundle; CPack DragNDrop DMG | Recipe only; universal build requires universal dependencies |
-| Ubuntu 22.04/24.04/26.04; Debian 12/13 | Qt 6.8 SDK or suitably new distro packages; CPack DEB | Recipe only |
-| Mint 21/22; Pop!_OS 22.04; elementary 7/8; Zorin 17 | Ubuntu route with a Qt 6.8 SDK when distro Qt is older | Recipe only |
-| Fedora 40/41/42 | Qt 6.8 development packages/SDK; CPack RPM | Recipe only |
-| Arch / Manjaro; openSUSE Leap 15.6 / Tumbleweed | Qt 6.8+; CMake/Ninja; TGZ, RPM where appropriate | Recipe only |
-| NixOS / Nix | `packaging/nix/flake.nix` | Recipe only |
-| Alpine (optional) | Native musl Qt ≥6.8; `SERIKA_ALPINE=ON`; system libraries | Experimental, unverified |
-| FreeBSD 14 (optional) | Qt ≥6.8 ports/packages and native CMake build | Experimental, unverified |
+| Windows x64 | Qt desktop kit, CMake/Ninja; portable ZIP and WiX 3 MSI | Windows 11 x64 build, tests and package smoke checks |
+| Windows ARM64 | Matching ARM64 Qt kit and compiler | No build or device validation |
+| macOS Intel / Apple Silicon | Qt SDK; app bundle and CPack DMG; `scripts/package-macos.sh` | Recipes only; no binary, signing or notarization validation |
+| Linux | Qt 6.8+ SDK/packages; TGZ/DEB/RPM; AppImage, Flatpak and Nix recipes | Recipes only; no Linux build or runtime validation |
+| Alpine / FreeBSD | Native Qt 6.8+ and compiler; Alpine requires `SERIKA_ALPINE=ON` | Experimental, unverified |
 
-Linux common dependency names are `qt6-base-dev`, `libqt6svg6-dev`, `qt6-image-formats-plugins`, `libraw-dev`, `zlib1g-dev`, `cmake`, `ninja-build` (Debian family), or their distro equivalents. Check that the selected Qt meets the required version.
+Many distributions ship Qt older than 6.8, so check the selected SDK. The [CI workflow](.github/workflows/build.yml) defines Windows, macOS and Ubuntu jobs; those targets do not establish platform support until their builds and runtime checks pass. No macOS/Linux release binaries are supplied for 0.0.1.
 
-```sh
-./scripts/build-unix.sh -DCMAKE_PREFIX_PATH=/path/to/Qt
-cmake --install build --prefix "$PWD/dist/stage"
-cpack --config build/CPackConfig.cmake -G TGZ
-# On Debian-family builders with dpkg-shlibdeps:
-cpack --config build/CPackConfig.cmake -G DEB
-# On RPM builders:
-cpack --config build/CPackConfig.cmake -G RPM
-# AppImage uses an externally supplied linuxdeploy + Qt plugin:
-./scripts/appimage.sh
-# Flatpak recipe:
-flatpak-builder --user --install build-flatpak packaging/flatpak/io.serika.PhotoEdit.yml
-# Nix recipe:
-nix build ./packaging/nix
-```
+## Validation and limits
 
-macOS packaging uses `scripts/package-macos.sh` or `cpack -G DragNDrop`; signing and notarization require the developer's own Apple credentials. The script accepts `CODESIGN_IDENTITY` and `NOTARY_PROFILE`. Windows MSI uses WiX 3.x and provides an optional file-association feature. Builds are unsigned.
+The Windows Release build passed with compiler warnings treated as errors. All eight CTest suites passed, with **227 QtTest checks**: 79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows. Counts include lifecycle slots and data-driven rows. Native UI, portable launch, headless batch, ZIP integrity and MSI administrative extraction were also checked. See the [validation record](docs/RELEASE-VALIDATION.md) and [benchmark measurements](docs/performance.json).
 
-## Verified results on this host
-
-On 8 October 2026, the Release build completed with compiler warnings treated as errors. All eight CTest suites passed; QtTest reported **227 passing checks** (79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows, including lifecycle slots and data rows). Native Windows screenshots were captured and inspected. Portable launch and a headless resize/invert/SPE batch were exercised with the development-tool directories removed from PATH.
-
-The Windows portable ZIP and WiX MSI were generated. MSI install/uninstall and file-association changes have not been exercised against the user's Windows installation. The installer and executable are unsigned.
-
-The ten-layer benchmark on the host's AMD Ryzen 5 5500U measured 539 ms cold composition, 5.02 ms median cached viewport zoom, 3.24 ms brush dab plus dirty-region composition, and 557 ms redraw after undo. These measurements describe this specific CPU raster scenario; complex group/effect stacks may require a full rebuild.
-
-## Tests and performance
-
-CTest runs eight QtTest suites: document/compositor, formats, native UI, canvas/tools, actions, shortcuts, masks and integrated workflows. Tests exercise high-precision samples, blend formulas, history isolation, corrupt files, PSD/PSB channels and masks, synthetic DNG decoding, PDF and raster imports, canvas gestures, crop commit/cancel, linked/unlinked mask transforms, retained smart sources, actual dialog cancellation/acceptance, shortcut remapping, layer order, clipboard coordinates and headless actions. Passing tests establish those behaviors; they do not certify all items in the supplied brief.
-
-```powershell
-./build/performance_bench.exe -platform offscreen --output docs/performance.json
-```
-
-The benchmark measures a 4000 × 3000 document with ten raster layers, cold and cached compositing, a resampled viewport, a dirty-tile brush update and undo. Results in `docs/performance.json` are host measurements, not cross-platform or guaranteed frame-rate claims.
+Serika does not have full Photoshop parity. Content-aware tools use local CPU algorithms; embedded smart-object subdocuments, comprehensive Adobe descriptors, full typography, CMYK/Lab editing, professional ICC/proof workflows, advanced multi-layer transforms and GPU acceleration remain limited or absent. Many operations allocate full images despite the tiled model; canvas creation is capped at 80 million pixels. Test results cover the exercised behaviors, rather than every image, camera or external PSD/PSB file.
 
 ## Headless actions
 
-Actions are JSON objects with a `steps` array. Each step contains a `command`, optional `name` and `parameters`. The included example resizes images and applies an exposure adjustment:
+Actions are JSON documents with a `steps` array. The [included example](examples/web-export.speaction) resizes images and applies an exposure adjustment:
 
 ```powershell
-./dist/portable/bin/SerikaPhotoEdit.exe --batch examples/web-export.speaction input-folder output-folder
+./bin/SerikaPhotoEdit.exe --batch ./share/serika-photoedit/examples/web-export.speaction input-folder output-folder
 ```
 
-Batch writes SPE files. Supported operations fail explicitly on invalid parameters or unknown commands, and playback rolls back the document on failure. GUI recording captures supported commands and accepted adjustment/filter settings; it does not record arbitrary pointer gestures.
+Run this command from the extracted portable package. Batch writes SPE files, reports invalid parameters or unsupported commands, and rolls back failed playback. GUI recording captures supported commands and accepted settings, rather than arbitrary pointer gestures.
 
-## Repository
+## Contribute and license
 
-`src/document` owns state, tiles and history; `src/compositor` owns rendering; `src/tools` and `src/ui/canvas` own gestures; `src/io` owns files; `src/filters` owns CPU processing; `src/actions` owns reproducible operations; `src/ui` owns native chrome and dialogs. Theme tokens and original SVG icons are in `resources`. `docs/ENGINE-CONTRACT.md` records module boundaries.
+Bug reports and focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and useful report details, and [CHANGELOG.md](CHANGELOG.md) for release history.
 
-Application code and original icons are MIT licensed. Shared libraries and codecs retain their own licenses; see [third-party notices](docs/THIRD-PARTY.md) and `resources/licenses`.
+Application code and original Serika icons are [MIT licensed](LICENSE). Qt, LibRaw, codecs and compiler runtimes retain their own licenses; see [third-party notices](docs/THIRD-PARTY.md) and the bundled license texts.

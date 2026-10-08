@@ -139,7 +139,7 @@ void MainWindow::runCommand(const QString &name) {
     if (name == "About Serika PhotoEdit") {
         QMessageBox::about(
             this, "About Serika PhotoEdit",
-            "<h2>Serika PhotoEdit</h2><p>1.0.0-ultra · Serika</p><p>Native photo editing. Layers, masks, "
+            "<h2>Serika PhotoEdit</h2><p>0.0.1 · Serika</p><p>Native photo editing. Layers, masks, "
             "RAW, PSD.</p><p>C++20 · Qt " +
                 QString(qVersion()) +
                 " · CPU raster compositor</p><p>Original interface icons. MIT application source.</p>");
@@ -167,7 +167,7 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "3D Workspace Information") {
-        QMessageBox::information(this, "3D workspace", "3D editing is outside Serika PhotoEdit 1.0.");
+        QMessageBox::information(this, "3D workspace", "3D editing is not implemented in Serika PhotoEdit 0.0.1.");
         return;
     }
     if (name == "Neural Filters...") {

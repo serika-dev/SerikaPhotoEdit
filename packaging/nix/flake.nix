@@ -6,7 +6,7 @@
     eachSystem = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
   in {
     packages = eachSystem (pkgs: { default = pkgs.stdenv.mkDerivation {
-      pname = "serika-photoedit"; version = "1.0.0";
+      pname = "serika-photoedit"; version = "0.0.1";
       src = pkgs.lib.cleanSourceWith {
         src = ../..;
         filter = path: type: !(builtins.elem (builtins.baseNameOf path) [ ".git" ".tools" "build" "dist" ]);
