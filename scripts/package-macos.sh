@@ -305,15 +305,18 @@ PY
 python3 - "$bundle" "$identity" <<'PY'
 import pathlib, subprocess, sys
 bundle, identity = pathlib.Path(sys.argv[1]), sys.argv[2]
+main_executable = bundle / "Contents/MacOS/SerikaPhotoEdit"
 args = ["codesign", "--force", "--sign", identity]
 args += ["--timestamp=none"] if identity == "-" else ["--options", "runtime", "--timestamp"]
 magic = {bytes.fromhex(h) for h in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
-for path in sorted(bundle.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-    if path.is_file() and not path.is_symlink():
+for path in sorted(bundle.rglob("*"), key=lambda p: (-len(p.parts), str(p))):
+    # Signing the main executable can seal the enclosing app immediately.
+    # Let the final outer-app pass sign it after every nested code object.
+    if path != main_executable and path.is_file() and not path.is_symlink():
         with path.open("rb") as stream:
             if stream.read(4) in magic:
                 subprocess.check_call(args + [str(path)])
-for path in sorted(bundle.rglob("*.framework"), key=lambda p: len(p.parts), reverse=True):
+for path in sorted(bundle.rglob("*.framework"), key=lambda p: (-len(p.parts), str(p))):
     subprocess.check_call(args + [str(path)])
 subprocess.check_call(args + [str(bundle)])
 PY

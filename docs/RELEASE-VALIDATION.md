@@ -21,14 +21,30 @@ The benchmark results are in [performance.json](performance.json): 4000×3000, t
 
 ## Additional Linux and macOS packages
 
-Validation and publication of the additional platform downloads are **pending**. The [Unix packaging workflow](../.github/workflows/release-unix.yml) targets Ubuntu 24.04 x86_64 and aarch64, macOS 15 Intel and macOS 14 Apple Silicon. It compiles the immutable v0.0.1 application source at commit `73888a8e939b1669dfb7c9928c4910e7e1f7b1c2` with Qt 6.8.3, using current packaging scripts and refreshed documentation/notices. This extends the existing release without changing its tag or application version.
+The [Unix packaging workflow](../.github/workflows/release-unix.yml) compiles the immutable v0.0.1 application source at commit `0be61509836ceba24d76f551a31cf5ff98ed76eb` with Qt 6.8.3, using current packaging scripts and refreshed documentation/notices. This extends the existing release without changing its tag or application version. The annotated tag object is `73888a8e939b1669dfb7c9928c4910e7e1f7b1c2`; the source commit above is its peeled application revision.
 
 Bundled documentation is a packaging-time snapshot. See the [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md) and [release page](https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1) for results and download availability recorded after that snapshot.
 
-Planned Linux outputs are portable tar.gz, AppImage and DEB for each architecture. Qt and application libraries are bundled, with Ubuntu package copyright texts, common license texts and source/version inventories. The target baseline is Ubuntu 24.04/glibc 2.39; graphics drivers, a desktop session and fonts remain host requirements. AppImage runtime binaries are pinned by SHA-256, with their own license notices.
+### Linux x86_64 and aarch64
 
-Planned macOS outputs are DMG and ZIP for each native architecture. Bundled Mach-O code is audited for architecture, external dependencies and minimum OS version. Requested baselines are macOS 15 Intel and macOS 14 Apple Silicon; the bundle minimum is raised if a dependency requires it. Bundles use ad-hoc signing, without Developer ID signing or Apple notarization. Exact Homebrew dependency versions/source metadata and license files are retained in each app bundle.
+The successful Linux jobs are [x86_64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352843) and [aarch64](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37785285705/job/113338352298). Their packaging revision is `6dd48f7b7b08e19f59c0ba9df7b26f3503e5a40c`. These are the successful Linux jobs within a run whose macOS jobs did not complete package validation; the complete run is not an all-platform success.
 
-Build/test results, extracted-package launches, screenshot checks, batch save/reopen checks, dependency audits and final minimum OS versions will be recorded here after the jobs finish. No successful package or native-launch result is claimed while validation is pending.
+- Both native Ubuntu 24.04 architectures compiled with warnings treated as errors and passed all eight CTest suites: 227 QtTest checks each, with no failures or skips. Qt PDF, Image Formats and LibRaw features were retained. The application dependency versions are Qt 6.8.3, LibRaw 0.21.2 and zlib 1.3; the separately embedded AppImage runtime uses zlib 1.3.2.
+- Both jobs created tar.gz, AppImage and DEB downloads. Clean-environment checks exercised the staged application version, demo screenshot, batch resize/save, SPE reopen/resave and a document screenshot. XCB launch and capture passed under Xvfb.
+- Extracted tar.gz payloads passed executable/version and screenshot checks. Extracted DEB payloads launched through their installed launcher layout. AppImages passed version and screenshot checks using extraction mode, without requiring FUSE. Normal DEB installation/uninstallation and FUSE-mounted AppImage execution were not exercised.
+- The downloaded final archives have the expected ELF architectures, tagged application revision and packaging provenance. Dependency inventories retain exact Ubuntu binary/source package versions, owning-package copyright files and referenced common license texts. Required notice paths were present.
+- Both AppImage runtime headers and pinned SHA-256 values were checked. The embedded-library notices include the matching zlib 1.3.2 text; the [supplemental complete runtime notices](https://github.com/serika-dev/SerikaPhotoEdit/releases/download/v0.0.1/AppImage-runtime-DEPENDENCY-NOTICES.txt) also retain the zstd-bundled xxHash header credit.
+
+The Linux baseline is Ubuntu 24.04/glibc 2.39 on the matching architecture. Qt/application libraries are bundled; glibc, graphics drivers, a desktop session and fonts remain host requirements. Other distributions and older glibc have not been validated.
+
+### macOS Intel and Apple Silicon
+
+The Apple Silicon job in [the dedicated native run](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37786036463) passed, using packaging revision `c4217d8d2c3f13ff525c34766f0bd144bfbce507`. The final Intel job is still awaiting completion; the entire run is not yet recorded as successful.
+
+- The native macOS 14 arm64 build passed all eight CTest suites: 227 QtTest checks, with no failures or skips. Its build record identifies Qt 6.8.3, LibRaw 0.22.2 and SDK/system zlib 1.2.12.
+- Both its extracted ZIP and mounted DMG passed version checks, batch resize/invert/save, SPE reopen/resave, native Cocoa demo screenshots and document-reopen screenshots. The build Qt kit and Homebrew Cellar were temporarily hidden while those packaged applications ran with a clean environment and isolated preferences.
+- The arm64 bundle passed strict signature verification and Mach-O architecture/dependency checks. Its dependency manifest records minimum macOS 14.0, tagged application source and the Homebrew source/version inventory. The DMG editor screenshot was visually inspected.
+
+The bundles use ad-hoc signing without Developer ID signing or Apple notarization. Exact Homebrew dependency versions/source metadata and license files are retained in each app bundle. Native Intel/macOS 15 package evidence will be recorded after its final job completes.
 
 Full interactive desktop acceptance outside Windows 11, Developer ID signing/notarization and universal Mac builds, normal DEB installation/uninstallation, other OS versions, tablets, mixed-DPI displays and externally produced large PSD/RAW corpora remain unverified. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md) for the full feature limits.

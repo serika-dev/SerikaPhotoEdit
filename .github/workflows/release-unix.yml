@@ -14,6 +14,12 @@ on:
         default: all
         type: choice
         options: [all, linux, macos]
+      architecture:
+        description: Native architecture to package
+        required: true
+        default: all
+        type: choice
+        options: [all, x86_64, arm64, aarch64]
 
 permissions:
   contents: read
@@ -29,12 +35,15 @@ jobs:
         name: Select native build targets
         env:
           REQUESTED_PLATFORMS: ${{ inputs.platforms }}
+          REQUESTED_ARCHITECTURE: ${{ inputs.architecture }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib
           targets = json.loads(pathlib.Path('.github/release-targets.json').read_text())
           selected = os.environ['REQUESTED_PLATFORMS']
+          architecture = os.environ['REQUESTED_ARCHITECTURE']
           targets = [t for t in targets if selected == 'all' or t['platform'] == selected]
+          targets = [t for t in targets if architecture == 'all' or t['arch'] == architecture]
           if not targets:
               raise SystemExit('No matching release targets')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
