@@ -2,7 +2,7 @@
 
 SPE/SPEB use the same versioned chunk container. All document-model fields are saved,
 including sparse 256-pixel tiles, their native 8/16/float format, editable text, paths,
-groups, masks, effects, selections, guides, ICC data and JSON metadata. Every chunk has
+groups, raster/vector masks and their density/feather/link state, retained smart-object source pixels and filter stacks, content transforms, effects, native-depth selections, guides, ICC data and JSON metadata. Saved selection channels and layer comps also persist. Every chunk has
 a CRC-32. A checked copy of the JSON header and an end marker detect incomplete writes.
 `QSaveFile` performs replacement atomically; the native writer flushes the file handle
 before committing. Tile samples use little endian; PSD samples use big endian.
@@ -23,7 +23,7 @@ guides are emitted. Editable Serika text/shapes/adjustments/styles/smart-object 
 are additionally stored in private `sPEd` blocks with raster compatibility pixels.
 Those fields are editable when reopened in Serika; other editors see their raster
 compatibility form. Native Adobe type-engine, smart-object and effect descriptors are
-not synthesized. `sPEi` preserves Serika's model ordering when reopening groups.
+not synthesized. Raster mask density and feather are emitted as standard mask parameters; 16-bit and float coverage are retained. Vector mask geometry and smart-filter graphs use Serika private blocks. `sPEi` preserves Serika's model ordering when reopening groups.
 
 The PSD reader has a 2 GB whole-file working-memory limit and a 512 MB per-plane
 limit. SPE is streamed chunk by chunk and is not subject to the PSD whole-file limit.

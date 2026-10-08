@@ -1,17 +1,28 @@
 #pragma once
-#include <QObject>
-#include <QImage>
 #include <QColor>
-#include <QJsonObject>
-#include <QPainter>
-#include <QPainterPath>
 #include <QFont>
 #include <QHash>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QObject>
+#include <QPainter>
+#include <QPainterPath>
 #include <QVector>
 #include <functional>
 
 namespace serika {
-enum class LayerKind { Pixel, Group, Text, Shape, Adjustment, SolidFill, GradientFill, SmartObject, Artboard };
+enum class LayerKind {
+    Pixel,
+    Group,
+    Text,
+    Shape,
+    Adjustment,
+    SolidFill,
+    GradientFill,
+    SmartObject,
+    Artboard
+};
 QStringList blendModeNames();
 QStringList adjustmentNames();
 struct TileImage {
@@ -35,6 +46,16 @@ struct Layer {
     QImage mask;
     bool maskEnabled = true;
     bool maskTarget = false;
+    qreal maskDensity = 1.0;
+    qreal maskFeather = 0.0;
+    bool maskLinked = true;
+    QPointF maskOffset;
+    QPainterPath vectorMask;
+    bool vectorMaskEnabled = true;
+    qreal vectorMaskDensity = 1.0;
+    qreal vectorMaskFeather = 0.0;
+    bool vectorMaskLinked = true;
+    QPointF vectorMaskOffset;
     bool visible = true;
     bool locked = false;
     bool lockAlpha = false;
@@ -55,10 +76,15 @@ struct Layer {
     QJsonObject parameters;
     QJsonObject effects;
     QString linkedPath;
+    // Smart-object pixels remain the retained source. Filters are evaluated at render time.
+    QJsonArray smartFilters;
 };
-struct Guide { bool vertical = false; qreal position = 0; };
+struct Guide {
+    bool vertical = false;
+    qreal position = 0;
+};
 struct DocumentState {
-    QSize size = QSize(1920,1080);
+    QSize size = QSize(1920, 1080);
     QVector<Layer> layers;
     int activeIndex = 0;
     QImage selection;
@@ -71,7 +97,7 @@ struct DocumentState {
 };
 class Document : public QObject {
     Q_OBJECT
-public:
+  public:
     explicit Document(QObject *parent = nullptr);
     DocumentState state;
     QString title = "Untitled";
@@ -83,6 +109,7 @@ public:
     Layer *activeLayer();
     const Layer *activeLayer() const;
     int indexForId(quint64 id) const;
+    QPointF effectiveLayerOffset(const Layer &layer) const;
     void setActiveIndex(int index);
     quint64 addLayer(QString name = QString(), LayerKind kind = LayerKind::Pixel);
     void removeActiveLayer();
@@ -91,6 +118,14 @@ public:
     void mergeDown();
     void flatten();
     void addMask();
+    void removeMask(bool apply = false);
+    void invertMask();
+    void addVectorMask(const QPainterPath &path);
+    void loadMaskSelection(bool vector = false, const QString &operation = "replace");
+    void convertToSmartObject();
+    void addSmartFilter(const QString &name, const QJsonObject &parameters = {});
+    bool updateSmartFilter(int index, const QJsonObject &entry);
+    bool removeSmartFilter(int index);
     void addAdjustment(const QString &name, const QJsonObject &params = {});
     void beginTransaction(const QString &name);
     void endTransaction();
@@ -112,16 +147,35 @@ public:
     void setSelection(const QImage &mask, const QString &operation = "replace");
     void selectAll();
     void deselect();
+    bool reselect();
     void invertSelection();
+    void refineSelection(const QJsonObject &parameters);
+    void saveSelection(const QString &name);
+    bool loadSelection(const QString &name, const QString &operation = "replace");
+    QStringList savedSelectionNames() const;
+    QJsonArray layerComps() const;
+    int captureLayerComp(const QString &name, bool visibility = true, bool position = true,
+                         bool appearance = true);
+    bool applyLayerComp(int index);
+    bool deleteLayerComp(int index);
+    QImage historyLayerImage(quint64 layerId, int historyIndex) const;
+    bool restoreHistoryPixels(quint64 layerId, const QImage &coverage, int historyIndex);
     void resizeImage(QSize newSize, Qt::TransformationMode mode = Qt::SmoothTransformation);
     void resizeCanvas(QSize newSize, QPoint anchorOffset = {});
-    void crop(const QRect &rect);
-signals:
+    void crop(const QRect &rect, bool deletePixels = false);
+  signals:
     void changed();
     void activeLayerChanged();
     void historyChanged();
-private:
-    struct HistoryEntry { QString name; DocumentState before; DocumentState after; quint64 beforeRevision; quint64 afterRevision; };
+
+  private:
+    struct HistoryEntry {
+        QString name;
+        DocumentState before;
+        DocumentState after;
+        quint64 beforeRevision;
+        quint64 afterRevision;
+    };
     QVector<HistoryEntry> m_history;
     int m_historyCursor = 0;
     quint64 m_revision = 0;
@@ -141,5 +195,13 @@ private:
 };
 QImage compositeDocument(const DocumentState &state, bool linear = false);
 QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObject &parameters);
+// Normalized precision-safe selection helpers. Out-of-bounds coverage is zero.
+qreal maskSample(const QImage &mask, int x, int y);
+void setMaskSample(QImage &mask, int x, int y, qreal value);
+QImage makeMask(QSize size, int bitDepth = 8, qreal value = 0);
+QImage normalizeMask(const QImage &mask, int bitDepth = 0);
+QImage refineMask(const QImage &mask, const QJsonObject &parameters, const QImage &source = {});
+QImage renderedLayerMask(const Layer &layer, QSize canvas, int bitDepth = 8, bool includeRaster = true,
+                         bool includeVector = true);
 QColor blendColor(QColor backdrop, QColor source, const QString &mode);
-}
+} // namespace serika

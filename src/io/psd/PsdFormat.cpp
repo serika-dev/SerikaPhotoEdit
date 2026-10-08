@@ -1,6 +1,7 @@
 // Clean-room PSD/PSB implementation based on Adobe's public file format
 // specification: https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/
 #include "io/FormatInternal.h"
+#include "io/LayerExtras.h"
 #include <QColorSpace>
 #include <QDataStream>
 #include <QFile>
@@ -64,6 +65,14 @@ struct Reader {
         p += 8;
         return v;
     }
+    double real() {
+        const quint64 bits = u64();
+        double value;
+        std::memcpy(&value, &bits, sizeof(value));
+        if (!std::isfinite(value))
+            throw std::runtime_error("Invalid PSD mask parameter.");
+        return value;
+    }
     quint64 length(bool psb) { return psb ? u64() : u32(); }
     QString unicode() {
         quint32 n = u32();
@@ -104,6 +113,11 @@ struct Writer {
         char p[8];
         qToBigEndian(v, p);
         b.append(p, 8);
+    }
+    void real(double value) {
+        quint64 bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        u64(bits);
     }
     void length(quint64 n, bool psb) {
         if (psb)
@@ -365,17 +379,16 @@ QByteArray encodeMask(const QImage &mask, int depth) {
     QByteArray encoded(planeSize(mask.width(), mask.height(), depth) + 2, Qt::Uninitialized);
     encoded[0] = encoded[1] = 0;
     char *dest = encoded.data() + 2;
-    const QImage im = mask.convertToFormat(QImage::Format_Grayscale16);
-    for (int y = 0; y < im.height(); ++y)
-        for (int x = 0; x < im.width(); ++x) {
-            auto v = reinterpret_cast<const quint16 *>(im.constScanLine(y))[x];
+    for (int y = 0; y < mask.height(); ++y)
+        for (int x = 0; x < mask.width(); ++x) {
+            const qreal coverage = maskSample(mask, x, y);
             if (depth == 8)
-                *dest++ = char(v >> 8);
+                *dest++ = char(qRound(coverage * 255));
             else if (depth == 16) {
-                qToBigEndian(v, dest);
+                qToBigEndian(quint16(qRound(coverage * 65535)), dest);
                 dest += 2;
             } else {
-                float f = v / 65535.0f;
+                float f = float(coverage);
                 quint32 bits;
                 std::memcpy(&bits, &f, 4);
                 qToBigEndian(bits, dest);
@@ -391,8 +404,13 @@ struct Channel {
 struct Record {
     Layer layer;
     QRect bounds, maskBounds;
+    QRect realMaskBounds;
     int section = 0, sourceIndex = -1;
     quint8 maskDefault = 255, maskFlags = 0;
+    quint8 realMaskDefault = 255, realMaskFlags = 0;
+    bool retainedSmartSource = false;
+    bool privateMaskLayout = false;
+    bool hasRealMask = false;
     QVector<Channel> channels;
 };
 bool tag64(const QByteArray &key, bool psb) {
@@ -464,10 +482,18 @@ void parseTags(Reader &extra, Record &rec, bool psb, QStringList &report) {
             rec.layer.parameters = o["parameters"].toObject();
             rec.layer.adjustment = o["adjustment"].toString();
             rec.layer.linkedPath = o["linkedPath"].toString();
+            rec.layer.opacity = o["opacity"].toDouble(rec.layer.opacity);
+            rec.layer.fill = o["fill"].toDouble(rec.layer.fill);
             QByteArray shape = QByteArray::fromBase64(o["shape"].toString().toLatin1());
             QDataStream stream(shape);
             stream.setVersion(QDataStream::Qt_6_0);
             stream >> rec.layer.shape;
+            if (!restoreLayerExtras(rec.layer, o["extras"].toObject()))
+                throw std::runtime_error("Invalid Serika mask or smart-object metadata.");
+            const QJsonObject extras = o["extras"].toObject();
+            rec.retainedSmartSource =
+                rec.layer.kind == LayerKind::SmartObject && extras.contains("smartSource");
+            rec.privateMaskLayout = extras.contains("maskOffset");
         } else if (key == "clbl" || key == "infx" || key == "knko" || key == "lclr" || key == "lnsr") {
             preserved.append(QJsonObject{{"key", QString::fromLatin1(key)},
                                          {"data", QString::fromLatin1(data.toBase64())}});
@@ -521,6 +547,23 @@ QVector<Record> readLayerInfo(const QByteArray &data, bool psb, int depth, int m
             rec.maskDefault = mask.u8();
             rec.maskFlags = mask.u8();
             rec.layer.maskEnabled = !(rec.maskFlags & 2);
+            if ((rec.maskFlags & 16) && mask.left()) {
+                const quint8 parameters = mask.u8();
+                if (parameters & 1)
+                    rec.layer.maskDensity = mask.u8() / 255.;
+                if (parameters & 2)
+                    rec.layer.maskFeather = qBound(0., mask.real(), 1000.);
+                if (parameters & 4)
+                    rec.layer.vectorMaskDensity = mask.u8() / 255.;
+                if (parameters & 8)
+                    rec.layer.vectorMaskFeather = qBound(0., mask.real(), 1000.);
+            }
+            if (mask.left() >= 18) {
+                rec.realMaskFlags = mask.u8();
+                rec.realMaskDefault = mask.u8();
+                rec.realMaskBounds = mask.rect();
+                rec.hasRealMask = true;
+            }
         }
         ex.skip(ex.u32());
         auto n = ex.u8();
@@ -533,14 +576,26 @@ QVector<Record> readLayerInfo(const QByteArray &data, bool psb, int depth, int m
     for (auto &rec : records) {
         QHash<int, QByteArray> planes;
         QByteArray mask;
+        QRect decodedMaskBounds;
+        quint8 decodedMaskFlags = rec.maskFlags, decodedMaskDefault = rec.maskDefault;
         bool usable = true;
         for (const auto &ch : rec.channels) {
             auto bytes = r.take(ch.length);
             try {
                 if (ch.id == -2 || ch.id == -3) {
-                    auto v = decodePlane(bytes, rec.maskBounds.width(), rec.maskBounds.height(), depth, psb);
-                    if (ch.id == -2 || mask.isEmpty())
+                    const QRect bounds = ch.id == -3 && rec.hasRealMask ? rec.realMaskBounds : rec.maskBounds;
+                    auto v = decodePlane(bytes, bounds.width(), bounds.height(), depth, psb);
+                    if (ch.id == -2 || mask.isEmpty()) {
                         mask = v;
+                        decodedMaskBounds = bounds;
+                        if (ch.id == -3 && rec.hasRealMask) {
+                            decodedMaskFlags = rec.realMaskFlags;
+                            decodedMaskDefault = rec.realMaskDefault;
+                        } else {
+                            decodedMaskFlags = rec.maskFlags;
+                            decodedMaskDefault = rec.maskDefault;
+                        }
+                    }
                 } else if (ch.id >= -1 && ch.id < 4)
                     planes[ch.id] = decodePlane(bytes, rec.bounds.width(), rec.bounds.height(), depth, psb);
                 else
@@ -551,31 +606,45 @@ QVector<Record> readLayerInfo(const QByteArray &data, bool psb, int depth, int m
                 usable = false;
             }
         }
-        if (usable && rec.section == 0 && !rec.bounds.isEmpty())
+        if (usable && rec.section == 0 && !rec.bounds.isEmpty() && !rec.retainedSmartSource)
             rec.layer.pixels = TileImage::fromImage(
                 planesToImage(planes, rec.bounds.width(), rec.bounds.height(), depth, mode));
         if (!mask.isEmpty()) {
-            QPoint position = rec.maskBounds.topLeft();
-            if (!(rec.maskFlags & 1))
-                position -= rec.bounds.topLeft();
-            QSize maskSize = rec.bounds.isEmpty() ? canvas : rec.bounds.size();
-            maskSize = maskSize.expandedTo(QSize(qMax(0, position.x() + rec.maskBounds.width()),
-                                                 qMax(0, position.y() + rec.maskBounds.height())));
-            if (quint64(maskSize.width()) * maskSize.height() > 512ull * 1024 * 1024)
+            QPoint position;
+            QRect localBounds(QPoint(), decodedMaskBounds.size());
+            if (!rec.privateMaskLayout) {
+                position = decodedMaskBounds.topLeft();
+                if (!(decodedMaskFlags & 1))
+                    position -= rec.bounds.topLeft();
+                localBounds = QRect(position, decodedMaskBounds.size())
+                                  .united(QRect(QPoint(), rec.bounds.isEmpty() ? canvas : rec.bounds.size()));
+                position -= localBounds.topLeft();
+                if (!localBounds.topLeft().isNull()) {
+                    // Independent mask extents may start before the layer origin. Preserve the
+                    // entire mask, including negative coordinates, rather than discarding samples.
+                    rec.layer.maskLinked = false;
+                    rec.layer.maskOffset = localBounds.topLeft();
+                }
+            }
+            const QSize maskSize = localBounds.size();
+            if (quint64(maskSize.width()) * maskSize.height() * (depth == 32 ? 16 : depth / 8) >
+                1024ull * 1024 * 1024)
                 throw std::runtime_error("PSD mask exceeds the safe allocation limit.");
-            rec.layer.mask = QImage(maskSize, QImage::Format_Grayscale8);
-            rec.layer.mask.fill(rec.maskDefault);
-            for (int y = 0; y < rec.maskBounds.height(); ++y) {
+            const qreal defaultCoverage =
+                (decodedMaskFlags & 4) ? 1 - decodedMaskDefault / 255. : decodedMaskDefault / 255.;
+            rec.layer.mask = makeMask(maskSize, depth, defaultCoverage);
+            for (int y = 0; y < decodedMaskBounds.height(); ++y) {
                 int dy = position.y() + y;
                 if (dy < 0 || dy >= maskSize.height())
                     continue;
-                auto row = rec.layer.mask.scanLine(dy);
-                for (int x = 0; x < rec.maskBounds.width(); ++x) {
+                for (int x = 0; x < decodedMaskBounds.width(); ++x) {
                     int dx = position.x() + x;
                     if (dx >= 0 && dx < maskSize.width())
-                        row[dx] = qRound(
-                            qBound(0.0, sample(mask, qsizetype(y) * rec.maskBounds.width() + x, depth), 1.0) *
-                            255);
+                        setMaskSample(
+                            rec.layer.mask, dx, dy,
+                            (decodedMaskFlags & 4)
+                                ? 1 - sample(mask, qsizetype(y) * decodedMaskBounds.width() + x, depth)
+                                : sample(mask, qsizetype(y) * decodedMaskBounds.width() + x, depth));
                 }
             }
         }
@@ -598,7 +667,10 @@ QByteArray privateLayer(const Layer &l) {
                   {"adjustment", l.adjustment},
                   {"parameters", l.parameters},
                   {"effects", l.effects},
-                  {"linkedPath", l.linkedPath}};
+                  {"linkedPath", l.linkedPath},
+                  {"opacity", l.opacity},
+                  {"fill", l.fill},
+                  {"extras", layerExtras(l, true)}};
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 struct ExportRecord {
@@ -840,7 +912,7 @@ bool writePsd(const Document *doc, const QString &path, QString *error) {
                         records.append({end, {}, 3});
                     } else {
                         QImage image;
-                        if (it->kind == LayerKind::Pixel || it->kind == LayerKind::SmartObject)
+                        if (it->kind == LayerKind::Pixel)
                             image = it->pixels.image();
                         else
                             image = doc->layerImage(*it);
@@ -896,11 +968,33 @@ bool writePsd(const Document *doc, const QString &path, QString *error) {
             if (l.mask.isNull())
                 extra.u32(0);
             else {
-                extra.u32(20);
-                extra.rect(QRect(absoluteOffset(l), l.mask.size()));
-                extra.u8(255);
-                extra.u8(l.maskEnabled ? 0 : 2);
-                extra.u16(0);
+                const QRect maskBounds(absoluteOffset(l) + (l.maskLinked ? QPoint() : l.maskOffset.toPoint()),
+                                       l.mask.size());
+                const quint8 parameters = (l.maskDensity != 1 ? 1 : 0) | (l.maskFeather > 0 ? 2 : 0) |
+                                          (l.vectorMaskDensity != 1 ? 4 : 0) |
+                                          (l.vectorMaskFeather > 0 ? 8 : 0);
+                const quint8 flags = (l.maskEnabled ? 0 : 2) | (parameters ? 16 : 0);
+                Writer mask;
+                mask.rect(maskBounds);
+                mask.u8(0);
+                mask.u8(flags);
+                if (parameters) {
+                    mask.u8(parameters);
+                    if (parameters & 1)
+                        mask.u8(qRound(qBound(0., l.maskDensity, 1.) * 255));
+                    if (parameters & 2)
+                        mask.real(l.maskFeather);
+                    if (parameters & 4)
+                        mask.u8(qRound(qBound(0., l.vectorMaskDensity, 1.) * 255));
+                    if (parameters & 8)
+                        mask.real(l.vectorMaskFeather);
+                    mask.u8(flags);
+                    mask.u8(0);
+                    mask.rect(maskBounds);
+                } else
+                    mask.u16(0);
+                extra.u32(mask.b.size());
+                extra.raw(mask.b);
             }
             extra.u32(0);
             extra.pascal(l.name, 4);

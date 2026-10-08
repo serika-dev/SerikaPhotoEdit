@@ -1,4 +1,5 @@
 #include "ActionRunner.h"
+#include "document/TransformOperations.h"
 #include "io/FormatIO.h"
 #include <QColorSpace>
 #include <QFile>
@@ -64,21 +65,51 @@ QImage::Format storage(int depth) {
 double number(const QJsonObject &o, const QString &name, double fallback) {
     return o.value(name).toDouble(fallback);
 }
+bool targetsMask(const Layer &layer) { return layer.maskTarget && !layer.mask.isNull(); }
+QPointF selectionOrigin(const Document *document, const Layer &layer) {
+    QPointF origin = document->effectiveLayerOffset(layer);
+    if (targetsMask(layer) && !layer.maskLinked)
+        origin += layer.maskOffset;
+    return origin;
+}
+qreal selectedAmount(const QImage &selection, QPointF point) {
+    const int x = int(std::floor(point.x())), y = int(std::floor(point.y()));
+    const qreal dx = point.x() - x, dy = point.y() - y;
+    return maskSample(selection, x, y) * (1 - dx) * (1 - dy) +
+           maskSample(selection, x + 1, y) * dx * (1 - dy) + maskSample(selection, x, y + 1) * (1 - dx) * dy +
+           maskSample(selection, x + 1, y + 1) * dx * dy;
+}
+QImage maskPixels(const QImage &image, int bitDepth) {
+    QImage mask = makeMask(image.size(), bitDepth);
+    const QImage linear = image.convertToFormat(QImage::Format_RGBA32FPx4);
+    for (int y = 0; y < mask.height(); ++y) {
+        const float *row = reinterpret_cast<const float *>(linear.constScanLine(y));
+        for (int x = 0; x < mask.width(); ++x) {
+            const float *pixel = row + x * 4;
+            setMaskSample(mask, x, y, .299 * pixel[0] + .587 * pixel[1] + .114 * pixel[2]);
+        }
+    }
+    return mask;
+}
+void writeRasterPixels(Layer &layer, const QImage &image) {
+    layer.pixels.setImage(image);
+    layer.kind = LayerKind::Pixel;
+    layer.smartFilters = {};
+    layer.parameters.remove("contentTransform");
+}
 QImage withSelection(const QImage &oldImage, const QImage &changedImage, const Document *doc,
                      const Layer &layer) {
     if (!doc->hasSelection())
         return changedImage;
     QImage old = oldImage.convertToFormat(QImage::Format_RGBA32FPx4),
            changed = changedImage.convertToFormat(QImage::Format_RGBA32FPx4);
-    const QImage selection = doc->state.selection.convertToFormat(QImage::Format_Grayscale8);
+    const QImage selection = doc->state.selection;
+    const QPointF origin = selectionOrigin(doc, layer);
     for (int y = 0; y < changed.height(); ++y) {
         auto target = reinterpret_cast<float *>(changed.scanLine(y));
         const auto original = reinterpret_cast<const float *>(old.constScanLine(y));
         for (int x = 0; x < changed.width(); ++x) {
-            QPoint position = QPoint(x, y) + layer.offset.toPoint();
-            float amount = selection.rect().contains(position)
-                               ? selection.constScanLine(position.y())[position.x()] / 255.f
-                               : 0;
+            float amount = float(selectedAmount(selection, QPointF(x, y) + origin));
             const float oldAlpha = original[x * 4 + 3], newAlpha = target[x * 4 + 3];
             const float alpha = oldAlpha * (1 - amount) + newAlpha * amount;
             for (int c = 0; c < 3; ++c)
@@ -138,7 +169,16 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
             return fail("Unknown filter: " + name);
         if (key == "adjustment" && !adjustmentNames().contains(name))
             return fail("Unknown adjustment: " + name);
-        QImage source = doc->layerImage(*layer);
+        const bool maskTarget = targetsMask(*layer);
+        if (maskTarget && (key == "develop" || key == "camera raw filter"))
+            return fail("Develop needs layer pixels rather than a layer mask.");
+        if (key == "filter" && layer->kind == LayerKind::SmartObject && !maskTarget &&
+            !params.value("destructive").toBool(false)) {
+            doc->addSmartFilter(name, params);
+            return true;
+        }
+        QImage source =
+            maskTarget ? layer->mask.convertToFormat(storage(doc->state.bitDepth)) : doc->layerImage(*layer);
         if (source.isNull())
             return fail("Active layer has no pixels to process.");
         QImage result = key == "adjustment" ? applyAdjustment(source, name, params)
@@ -149,9 +189,10 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
         result = withSelection(source, result, doc, *layer);
         doc->mutate(key == "filter" || key == "adjustment" ? name : "Develop", [&] {
             auto *l = doc->activeLayer();
-            l->pixels.setImage(result);
-            if (l->kind != LayerKind::SmartObject)
-                l->kind = LayerKind::Pixel;
+            if (maskTarget)
+                l->mask = maskPixels(result, doc->state.bitDepth);
+            else
+                writeRasterPixels(*l, result);
             if (key == "develop" || key == "camera raw filter") {
                 doc->state.bitDepth = int(number(params, "bitDepth", 16));
                 doc->state.iccProfile = result.colorSpace().iccProfile();
@@ -210,11 +251,9 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
         doc->mutate(command, [&] {
             auto *layer = doc->activeLayer();
             if (layer->maskTarget && !layer->mask.isNull())
-                layer->mask = result.convertToFormat(QImage::Format_Grayscale8);
-            else {
-                layer->pixels.setImage(result);
-                layer->kind = LayerKind::Pixel;
-            }
+                layer->mask = maskPixels(result, doc->state.bitDepth);
+            else
+                writeRasterPixels(*layer, result);
         });
         return true;
     }
@@ -268,6 +307,8 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
         if (!std::isfinite(rotation) || !std::isfinite(sx) || !std::isfinite(sy) || std::abs(sx) < .001 ||
             std::abs(sy) < .001 || std::abs(sx) > 100 || std::abs(sy) > 100)
             return fail("Invalid transform scale or angle.");
+        if (params.contains("matrix"))
+            return applyLayerTransform(doc, transformFromJson(params["matrix"].toArray()), error);
         QImage source = doc->layerImage(*l);
         if (source.isNull())
             return fail("Transform needs pixel content.");
@@ -279,18 +320,8 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
         if (mapped.width() > 300000 || mapped.height() > 300000 ||
             mapped.width() * mapped.height() * 16 > 1024.0 * 1024 * 1024)
             return fail("Transform exceeds safe image dimensions.");
-        QImage result = source.transformed(transform, Qt::SmoothTransformation);
-        if (result.isNull())
-            return fail("Transform failed.");
-        doc->mutate("Transform", [&] {
-            auto *layer = doc->activeLayer();
-            layer->pixels.setImage(result);
-            layer->kind = LayerKind::Pixel;
-            layer->offset += QPointF(number(params, "x", 0), number(params, "y", 0));
-            if (!layer->mask.isNull())
-                layer->mask = layer->mask.transformed(transform, Qt::SmoothTransformation);
-        });
-        return true;
+        transform *= QTransform::fromTranslate(number(params, "x", 0), number(params, "y", 0));
+        return applyLayerTransform(doc, transform, error);
     }
     if (key == "selection")
         key = name.toLower();

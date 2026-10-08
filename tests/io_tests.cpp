@@ -1,4 +1,5 @@
 #include "io/FormatIO.h"
+#include "io/LayerExtras.h"
 #include <QColorSpace>
 #include <QFile>
 #include <QTemporaryDir>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 
 using namespace serika;
@@ -90,6 +92,88 @@ QByteArray externalCompositePsd(bool rle) {
                 b += char(c * 60 + y * 7 + x);
         }
     return b;
+}
+QByteArray externalMaskedPsd(int depth) {
+    const auto scalar = [=](QByteArray &bytes, double value) {
+        if (depth == 16)
+            be16(bytes, quint16(qRound(value * 65535)));
+        else {
+            const float sample = float(value);
+            quint32 bits;
+            std::memcpy(&bits, &sample, sizeof(bits));
+            be32(bytes, bits);
+        }
+    };
+    QVector<QByteArray> channels;
+    for (int channel = 0; channel < 5; ++channel) {
+        QByteArray plane;
+        be16(plane, 0);
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 4; ++x) {
+                const double coverage = depth == 16 ? (12345 + x * 5000 + y * 1000) / 65535.
+                                                    : (x == 0 && y == 0 ? 1e-8 : .05 + x * .2 + y * .01);
+                scalar(plane, channel == 4 ? coverage : (channel == 0 || channel == 3 ? 1 : 0));
+            }
+        channels.append(plane);
+    }
+    QByteArray mask;
+    for (quint32 value : {1u, 1u, 3u, 5u})
+        be32(mask, value);
+    mask += char(0);  // Black outside the independent mask rectangle.
+    mask += char(16); // Has native mask parameters.
+    mask += char(1);  // Density parameter is present.
+    mask += char(128);
+    mask += char(0); // Real mask flags.
+    mask += char(0);
+    for (quint32 value : {1u, 1u, 3u, 5u})
+        be32(mask, value);
+    QByteArray extra;
+    be32(extra, mask.size());
+    extra += mask;
+    be32(extra, 0); // Blending ranges.
+    const QByteArray name = "External Mask";
+    extra += char(name.size());
+    extra += name;
+    extra += QByteArray((4 - (name.size() + 1) % 4) % 4, 0);
+    QByteArray info;
+    be16(info, 0xffff); // One layer, with merged alpha.
+    for (quint32 value : {1u, 2u, 3u, 6u})
+        be32(info, value);
+    be16(info, 5);
+    for (int channel = 0; channel < 5; ++channel) {
+        be16(info, quint16(channel < 3 ? channel : channel == 3 ? -1 : -2));
+        be32(info, channels[channel].size());
+    }
+    info += "8BIMnorm";
+    info += char(255);
+    info += QByteArray(3, 0);
+    be32(info, extra.size());
+    info += extra;
+    for (const QByteArray &channel : channels)
+        info += channel;
+    if (info.size() % 2)
+        info += char(0);
+    QByteArray layerMask;
+    be32(layerMask, info.size());
+    layerMask += info;
+    be32(layerMask, 0);
+    QByteArray bytes = "8BPS";
+    be16(bytes, 1);
+    bytes += QByteArray(6, 0);
+    be16(bytes, 4);
+    be32(bytes, 5);
+    be32(bytes, 8);
+    be16(bytes, depth);
+    be16(bytes, 3);
+    be32(bytes, 0);
+    be32(bytes, 0);
+    be32(bytes, layerMask.size());
+    bytes += layerMask;
+    be16(bytes, 0);
+    for (int c = 0; c < 4; ++c)
+        for (int i = 0; i < 40; ++i)
+            scalar(bytes, c == 0 || c == 3 ? 1 : 0);
+    return bytes;
 }
 QByteArray syntheticDng() {
     struct Tag {
@@ -401,7 +485,7 @@ class IoTests : public QObject {
         QCOMPARE(l.offset, layer.offset);
         QVERIFY(l.lockPosition);
         QVERIFY(!l.maskEnabled);
-        QVERIFY(identical(l.mask, layer.mask));
+        QVERIFY(identical(l.mask, normalizeMask(layer.mask, depth)));
         QVERIFY(identical(l.pixels.image(), layer.pixels.image()));
         QVERIFY(identical(r->state.layers[0].pixels.image(), d->state.layers[0].pixels.image()));
     }
@@ -576,6 +660,160 @@ class IoTests : public QObject {
         std::unique_ptr<Document> r(FormatIO::openPsd(path, &error));
         QVERIFY2(r, qPrintable(error));
         QCOMPARE(r->composite(), before);
+    }
+    void retainedMaskAndSmartGraph_data() {
+        QTest::addColumn<QString>("extension");
+        QTest::addColumn<int>("depth");
+        QTest::newRow("native16") << QString("spe") << 16;
+        QTest::newRow("native32") << QString("speb") << 32;
+        QTest::newRow("psd16") << QString("psd") << 16;
+        QTest::newRow("psb32") << QString("psb") << 32;
+    }
+    void retainedMaskAndSmartGraph() {
+        QFETCH(QString, extension);
+        QFETCH(int, depth);
+        QTemporaryDir dir;
+        std::unique_ptr<Document> doc(Document::create({24, 18}, Qt::transparent, depth));
+        Layer group;
+        group.id = 41;
+        group.kind = LayerKind::Group;
+        group.blendMode = "Pass Through";
+        group.offset = {2, 3};
+        doc->state.layers.append(group);
+        Layer child;
+        child.id = 42;
+        child.parentId = group.id;
+        child.offset = {1, 2};
+        child.pixels.setImage(pattern({9, 7}, depth));
+        child.mask = makeMask({18, 14}, depth, .73123);
+        setMaskSample(child.mask, 0, 0, depth == 32 ? 1e-8 : 1 / 65535.);
+        setMaskSample(child.mask, 1, 0, 12345 / 65535.);
+        child.maskDensity = .63;
+        child.maskFeather = 1.5;
+        child.maskLinked = false;
+        child.maskOffset = {-1.25, 2.5};
+        child.vectorMask.moveTo(0, 0);
+        child.vectorMask.cubicTo(3, 2, 9, 0, 18, 4);
+        child.vectorMask.lineTo(18, 14);
+        child.vectorMask.lineTo(0, 14);
+        child.vectorMask.closeSubpath();
+        child.vectorMaskDensity = .85;
+        child.vectorMaskFeather = .75;
+        child.vectorMaskLinked = false;
+        child.vectorMaskOffset = {.5, -.25};
+        child.opacity = .731234;
+        child.fill = .82345;
+        doc->state.layers.append(child);
+        doc->state.activeIndex = 2;
+        doc->addSmartFilter("Exposure", {{"exposure", 1}});
+        doc->activeLayer()->parameters["contentTransform"] = QJsonArray{2, 0, 0, 0, 2, 0, 0, 0, 1};
+        const Layer original = *doc->activeLayer();
+        const QImage originalComposite = doc->composite();
+        const QImage originalSource = original.pixels.image();
+        QString error;
+        const QString path = dir.filePath("retained." + extension);
+        const bool native = extension == "spe" || extension == "speb";
+        QVERIFY2(native ? FormatIO::saveNative(doc.get(), path, &error)
+                        : FormatIO::savePsd(doc.get(), path, &error),
+                 qPrintable(error));
+        std::unique_ptr<Document> loaded(native ? FormatIO::openNative(path, &error)
+                                                : FormatIO::openPsd(path, &error));
+        QVERIFY2(loaded, qPrintable(error));
+        const Layer &restored = loaded->state.layers[loaded->indexForId(original.id)];
+        QCOMPARE(restored.kind, LayerKind::SmartObject);
+        QCOMPARE(restored.pixels.size, QSize(9, 7));
+        QCOMPARE(loaded->layerImage(restored).size(), QSize(18, 14));
+        QVERIFY(identical(restored.pixels.image(), originalSource));
+        QVERIFY(identical(restored.mask, original.mask));
+        QCOMPARE(restored.maskDensity, original.maskDensity);
+        QCOMPARE(restored.maskFeather, original.maskFeather);
+        QCOMPARE(restored.maskLinked, original.maskLinked);
+        QCOMPARE(restored.maskOffset, original.maskOffset);
+        QCOMPARE(restored.vectorMask, original.vectorMask);
+        QCOMPARE(restored.vectorMaskOffset, original.vectorMaskOffset);
+        QCOMPARE(restored.vectorMaskFeather, original.vectorMaskFeather);
+        QCOMPARE(restored.smartFilters, original.smartFilters);
+        QCOMPARE(restored.parameters, original.parameters);
+        QCOMPARE(restored.opacity, original.opacity);
+        QCOMPARE(restored.fill, original.fill);
+        QVERIFY(identical(loaded->composite(), originalComposite));
+        loaded->setActiveIndex(loaded->indexForId(original.id));
+        auto filter = loaded->activeLayer()->smartFilters[0].toObject();
+        filter["enabled"] = false;
+        QVERIFY(loaded->updateSmartFilter(0, filter));
+        QVERIFY(!identical(loaded->composite(), originalComposite));
+        QVERIFY(identical(loaded->activeLayer()->pixels.image(), originalSource));
+    }
+    void maskSampleRoundtrip_data() {
+        QTest::addColumn<int>("depth");
+        QTest::newRow("16-bit") << 16;
+        QTest::newRow("float") << 32;
+    }
+    void maskSampleRoundtrip() {
+        QFETCH(int, depth);
+        QTemporaryDir dir;
+        std::unique_ptr<Document> doc(Document::create({8, 3}, Qt::red, depth));
+        auto *layer = doc->activeLayer();
+        layer->mask = makeMask(doc->state.size, depth, 1);
+        const qreal low = depth == 32 ? 1e-8 : 1 / 65535.;
+        setMaskSample(layer->mask, 1, 0, low);
+        setMaskSample(layer->mask, 2, 0, 12345 / 65535.);
+        QString error;
+        const QString path = dir.filePath("coverage.psd");
+        QVERIFY2(FormatIO::savePsd(doc.get(), path, &error), qPrintable(error));
+        std::unique_ptr<Document> loaded(FormatIO::openPsd(path, &error));
+        QVERIFY2(loaded, qPrintable(error));
+        const QImage &mask = loaded->activeLayer()->mask;
+        QCOMPARE(mask.format(), depth == 32 ? QImage::Format_RGBA32FPx4 : QImage::Format_Grayscale16);
+        QVERIFY(identical(mask, layer->mask));
+        QVERIFY(std::abs(maskSample(mask, 1, 0) - low) < (depth == 32 ? 1e-14 : 1e-12));
+        QVERIFY(identical(loaded->composite(), doc->composite()));
+    }
+    void vectorExtrasRejectInvalidCurveControls() {
+        Layer original;
+        original.vectorMask.addRect(0, 0, 5, 5);
+        auto extras = io::layerExtras(original);
+        for (const QJsonValue &bad :
+             {QJsonValue(std::numeric_limits<double>::infinity()), QJsonValue("bad"), QJsonValue(1e300)}) {
+            extras["vectorMask"] =
+                QJsonObject{{"elements", QJsonArray{QJsonArray{0, 0, 0}, QJsonArray{2, 1, 1},
+                                                    QJsonArray{3, bad, 2}, QJsonArray{3, 3, 3}}}};
+            Layer restored = original;
+            QVERIFY(!io::restoreLayerExtras(restored, extras));
+            QCOMPARE(restored.vectorMask, original.vectorMask);
+        }
+    }
+    void independentPsdMaskDepthAndNegativeExtent_data() {
+        QTest::addColumn<int>("depth");
+        QTest::newRow("16-bit") << 16;
+        QTest::newRow("float") << 32;
+    }
+    void independentPsdMaskDepthAndNegativeExtent() {
+        QFETCH(int, depth);
+        QTemporaryDir dir;
+        const QString path = dir.filePath("external-mask.psd");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(externalMaskedPsd(depth));
+        file.close();
+        QString error;
+        std::unique_ptr<Document> loaded(FormatIO::openPsd(path, &error));
+        QVERIFY2(loaded, qPrintable(error));
+        const Layer &layer = loaded->state.layers[0];
+        QCOMPARE(layer.mask.format(), depth == 16 ? QImage::Format_Grayscale16 : QImage::Format_RGBA32FPx4);
+        QCOMPARE(layer.maskOffset, QPointF(-1, 0));
+        QVERIFY(!layer.maskLinked);
+        QCOMPARE(layer.maskDensity, 128 / 255.);
+        const qreal first = depth == 16 ? 12345 / 65535. : 1e-8;
+        QVERIFY(std::abs(maskSample(layer.mask, 0, 0) - first) < (depth == 16 ? 1e-12 : 1e-14));
+        const qreal second = depth == 16 ? 17345 / 65535. : .25;
+        const qreal alpha = 1 - (128 / 255.) * (1 - second);
+        const QImage composite = loaded->composite();
+        if (depth == 16)
+            QVERIFY(std::abs(composite.pixelColor(2, 1).alphaF() - alpha) < 2 / 65535.);
+        else
+            QVERIFY(std::abs(reinterpret_cast<const float *>(composite.constScanLine(1))[2 * 4 + 3] - alpha) <
+                    1e-7);
     }
     void independentZipComposite() {
         QTemporaryDir dir;

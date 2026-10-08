@@ -1,4 +1,5 @@
 #include "actions/ActionRunner.h"
+#include "document/TransformOperations.h"
 #include "io/FormatIO.h"
 #include <QFile>
 #include <QJsonDocument>
@@ -10,6 +11,22 @@
 using namespace serika;
 class ActionTests : public QObject {
     Q_OBJECT
+    static std::unique_ptr<Document> transformedSmartObject() {
+        std::unique_ptr<Document> document(Document::create({16, 16}, Qt::transparent, 16));
+        QImage source({4, 3}, QImage::Format_RGBA64);
+        source.fill(QColor(30, 60, 90));
+        document->activeLayer()->pixels.setImage(source);
+        document->activeLayer()->offset = {2, 3};
+        document->convertToSmartObject();
+        document->addSmartFilter("Invert");
+        QTransform transform;
+        transform.scale(2, 2);
+        if (!applyLayerTransform(document.get(), transform))
+            return {};
+        document->clearHistory();
+        document->markSaved();
+        return document;
+    }
   private slots:
     void adjustmentRetainsParameters() {
         std::unique_ptr<Document> d(Document::create({7, 5}, QColor(30, 60, 90), 16));
@@ -116,6 +133,125 @@ class ActionTests : public QObject {
         const auto colour = d->activeLayer()->pixels.image().pixelColor(1, 1);
         QCOMPARE(colour.red(), 255);
         QVERIFY(std::abs(colour.alphaF() - .5) < .001);
+    }
+    void groupedUnlinkedMaskFillAndClearRetainFloatSelectionPrecision() {
+        std::unique_ptr<Document> document(Document::create({20, 16}, Qt::transparent, 32));
+        document->state.layers.clear();
+        const quint64 group = document->addLayer("Offset group", LayerKind::Group);
+        document->activeLayer()->offset = {4, 3};
+        document->addLayer("Masked child");
+        auto *layer = document->activeLayer();
+        layer->parentId = group;
+        layer->offset = {2, 1};
+        layer->maskOffset = {3, 2};
+        layer->maskLinked = false;
+        layer->maskTarget = true;
+        const float oldValue = .12345679f;
+        layer->mask = makeMask({4, 3}, 32, oldValue);
+        const TileImage originalPixels = layer->pixels;
+        QImage selection = makeMask(document->state.size, 32);
+        const float selected = .33333334f;
+        // Effective pixel origin (6,4) plus the independent mask offset (3,2).
+        setMaskSample(selection, 10, 7, selected);
+        document->setSelection(selection);
+        document->clearHistory();
+        QString error;
+        QVERIFY2(ActionRunner::execute(
+                     document.get(), {{"command", "fill"}, {"parameters", QJsonObject{{"color", "#ffffff"}}}},
+                     &error),
+                 qPrintable(error));
+        layer = document->activeLayer();
+        QCOMPARE(layer->mask.format(), QImage::Format_RGBA32FPx4);
+        const qreal expected = oldValue * (1 - selected) + selected;
+        QVERIFY(std::abs(maskSample(layer->mask, 1, 1) - expected) < 1e-7);
+        QCOMPARE(maskSample(layer->mask, 0, 0), qreal(oldValue));
+        QCOMPARE(layer->pixels.image(), originalPixels.image());
+        QVERIFY(ActionRunner::execute(document.get(), {{"command", "clear"}}, &error));
+        layer = document->activeLayer();
+        QVERIFY(std::abs(maskSample(layer->mask, 1, 1) - expected * (1 - selected)) < 1e-7);
+        QCOMPARE(maskSample(layer->mask, 0, 0), qreal(oldValue));
+        document->undo();
+        QVERIFY(std::abs(maskSample(document->activeLayer()->mask, 1, 1) - expected) < 1e-7);
+    }
+    void maskAdjustmentTargetsMaskWithoutRasterizingSmartContent() {
+        auto document = transformedSmartObject();
+        QVERIFY(document);
+        auto *layer = document->activeLayer();
+        const QImage originalPixels = layer->pixels.image();
+        const QJsonArray originalFilters = layer->smartFilters;
+        const QJsonObject originalParameters = layer->parameters;
+        layer->maskTarget = true;
+        layer->mask = makeMask({8, 6}, 16, .123456);
+        const qreal originalCoverage = maskSample(layer->mask, 0, 0);
+        QImage selection = makeMask(document->state.size, 16);
+        setMaskSample(selection, 3, 4, 1);
+        document->setSelection(selection);
+        QString error;
+        QVERIFY2(ActionRunner::execute(document.get(),
+                                       {{"command", "adjustment"},
+                                        {"name", "Invert"},
+                                        {"parameters", QJsonObject{{"destructive", true}}}},
+                                       &error),
+                 qPrintable(error));
+        layer = document->activeLayer();
+        QCOMPARE(layer->kind, LayerKind::SmartObject);
+        QCOMPARE(layer->pixels.image(), originalPixels);
+        QCOMPARE(layer->smartFilters, originalFilters);
+        QCOMPARE(layer->parameters, originalParameters);
+        QCOMPARE(layer->mask.format(), QImage::Format_Grayscale16);
+        QVERIFY(std::abs(maskSample(layer->mask, 1, 1) - (1 - originalCoverage)) < 2. / 65535);
+        QCOMPARE(maskSample(layer->mask, 0, 0), originalCoverage);
+    }
+    void rasterizingAdjustmentBakesTransformAndFiltersExactlyOnceAndUndoes() {
+        auto document = transformedSmartObject();
+        QVERIFY(document);
+        const QImage before = document->layerImage(*document->activeLayer());
+        const QImage expected = applyAdjustment(before, "Invert", {});
+        QCOMPARE(before.size(), QSize(8, 6));
+        QString error;
+        QVERIFY2(ActionRunner::execute(document.get(),
+                                       {{"command", "adjustment"},
+                                        {"name", "Invert"},
+                                        {"parameters", QJsonObject{{"destructive", true}}}},
+                                       &error),
+                 qPrintable(error));
+        const auto *layer = document->activeLayer();
+        QCOMPARE(layer->kind, LayerKind::Pixel);
+        QVERIFY(layer->smartFilters.isEmpty());
+        QVERIFY(!layer->parameters.contains("contentTransform"));
+        QCOMPARE(document->layerImage(*layer), expected);
+        document->undo();
+        QCOMPARE(document->activeLayer()->kind, LayerKind::SmartObject);
+        QCOMPARE(document->activeLayer()->smartFilters.size(), 1);
+        QVERIFY(document->activeLayer()->parameters.contains("contentTransform"));
+        QCOMPARE(document->layerImage(*document->activeLayer()), before);
+    }
+    void destructiveFillClearAndFilterBakeSmartObjectWithoutDoubleTransform() {
+        for (const QString &command : QStringList{"fill", "clear", "filter"}) {
+            auto document = transformedSmartObject();
+            QVERIFY(document);
+            const QImage before = document->layerImage(*document->activeLayer());
+            const QImage expected = applyFilter(before, "Gaussian Blur", {{"radius", 0}});
+            QJsonObject step{
+                {"command", command},
+                {"name", "Gaussian Blur"},
+                {"parameters", QJsonObject{{"destructive", true}, {"radius", 0}, {"color", "#0000ff"}}}};
+            QString error;
+            QVERIFY2(ActionRunner::execute(document.get(), step, &error), qPrintable(error));
+            const auto *layer = document->activeLayer();
+            QCOMPARE(layer->kind, LayerKind::Pixel);
+            QVERIFY(layer->smartFilters.isEmpty());
+            QVERIFY(!layer->parameters.contains("contentTransform"));
+            QCOMPARE(layer->pixels.size, before.size());
+            if (command == "fill")
+                QCOMPARE(document->layerImage(*layer).pixelColor(3, 2), QColor(Qt::blue));
+            else if (command == "clear")
+                QCOMPARE(document->layerImage(*layer).pixelColor(3, 2).alpha(), 0);
+            else
+                QCOMPARE(document->layerImage(*layer), expected);
+            document->undo();
+            QCOMPARE(document->layerImage(*document->activeLayer()), before);
+        }
     }
 };
 QTEST_MAIN(ActionTests)

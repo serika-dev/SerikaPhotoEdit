@@ -60,29 +60,34 @@ all display scales have not been established.
 
 | Panel or interaction | Behavior and limitations |
 | --- | --- |
-| Layers | Stable layer IDs, hierarchy/disclosure, thumbnails, visibility, blend mode, opacity/fill, locking, mask targeting, clipping, add/delete/duplicate/reorder/group, effects dialog and context operations. Complete Photoshop-style kind/name/effect filtering, linked-layer workflow and expandable per-effect rows are not provided. |
-| Properties / Adjustments | Context-dependent layer fields and parameterized adjustments. Some advanced operations expose a reduced set of controls. |
+| Layers | Stable IDs, hierarchy, thumbnails, visibility, blend/opacity/fill, locks, raster/vector masks, clipping, layer operations, effects and Smart Filters. Mask thumbnails support load-selection modifiers, preview and disabling; masks have linked/unlinked positions. Complete kind/name/effect filtering and linked-layer workflows remain limited. |
+| Properties / Adjustments | Context-dependent fields, parameterized adjustments, mask density/feather and editable Smart Filter stack. Some advanced operations expose a reduced set of controls. |
 | Color / Histogram / Navigator / Info | Functional color selection, histogram, navigation and canvas information. Info does not provide a separately color-managed proof readout. |
-| History | Executed-state list, undo/redo and purge. Tile data shares storage until changed. There is no separate persistent snapshot browser. |
+| History | Executed-state list, undo/redo, purge and selectable History Brush source. History Brush restores native color and transparency from an available history state. There is no separate persistent snapshot browser. |
 | Channels / Paths | Basic lists and selection/path operations. Saved selections live in metadata; there is no independent full-depth extra-channel compositing model or complete clipping-path manager. |
 | Character / Paragraph / Glyphs | Font/size, text editing and selected glyph insertion. They are lightweight controls, not a complete typography system. |
 | Swatches / Gradients / Patterns / Styles / Brushes | Usable generated choices and basic brush/pattern definition. There is no full preset import/export, search, migration, organized library or brush-tip engine. |
 | Brush Settings | Basic shared brush controls. Advanced brush dynamics, textured tips, dual brush and a complete preset editor are absent. |
 | Actions | Record supported editing commands, play and save/load parameterized action sets. See the action limitations below. |
 | Notes | Document metadata text editor. |
-| Layer Comps | Captures/restores visibility in the panel's item data. Comp records are not a persistent document comp model; position/appearance capture is absent. |
+| Layer Comps | Persistent records capture/restore visibility, position and appearance, with deletion and undo. Native files retain comps. There is no complete comp recapture/duplicate/export manager. |
 | Timeline | Plays layers in sequence at a chosen FPS. No editable per-frame visibility program, frame duplication/export manager or video import exists. |
 | Libraries | Local preset-folder browser. It is not an asset catalog or cloud service. |
 | Collapsed panels | A narrow rail is implemented by hiding panel contents. A full icon rail with temporary panel flyouts and edge-drag interactions is absent. |
 | Contextual task bar | Floating canvas child with selection/subject/background actions. It remains near the top of the canvas; it does not follow selection bounds or provide every type/shape/adjustment/RAW context from the brief. |
 | Document status | Zoom, dimensions, depth and profile indication. The requested scratch/efficiency/timing information cycle is absent. |
 
-Shortcuts cover primary tools, flyout cycling, common file/edit/layer/selection/view
-commands, temporary hand, color swapping, quick mask and a JSON shortcut editor.
-The automated UI tests exercise primary bindings and keyboard undo/redo. The full
-shortcut table, all modifier combinations, shortcut-editor conflicts and macOS
-command-key behavior still need a systematic manual audit. The Menus command uses
-the shortcut editor rather than a separate menu-visibility customization editor.
+The shortcut registry has stable IDs and command, tool, cycling, hold, brush,
+layer and crop scopes. Defaults cover common file/edit/layer/selection/view
+commands, tool groups and Shift cycling, temporary Hand/Move, color swapping,
+quick mask, blend modes, brush size/hardness, opacity/flow digits, layer
+ordering/navigation, crop overlays and commit/cancel. Bindings can be changed,
+disabled, searched, reset and imported/exported as JSON. Conflict checks include
+multi-key prefixes, and text fields retain their editing keys. Remapping replaces
+the previous bindings, including native canvas keys. Tests exercise the table,
+conflicts, persistence, text-field protection, hold release and real editor
+workflows. macOS command keys and non-US physical layouts need device validation.
+Menus uses the shortcut editor rather than separate menu-visibility customization.
 
 ## Document model, history and precision
 
@@ -104,15 +109,18 @@ history limits and history purge are implemented. The layer/tile maps are still
 part of state snapshots; this is shared tile storage, not a dedicated on-disk
 dirty-tile command log.
 
-Selections use **8-bit grayscale masks**, including in 16/32-bit documents. Boolean
-replace/add/subtract/intersect/xor, invert, bounds caching, quick-mask painting and
-selection clipping work. There is no full-depth selection or separate vector
-selection component. Raster layer masks support higher precision in storage and
-compositing, but mask/selection tools commonly create or convert to 8-bit masks.
-Vector masks, blend-if sliders, knockout and channel-exclusion fields are absent.
+Selections and raster masks use native **8-bit, 16-bit and 32-bit floating
+coverage** matching the document. Boolean operations, invert, reselect, bounds
+caching, quick-mask painting and selection clipping work. Saved selections retain
+native samples. Layer masks support density, feather, enabled state, targeting,
+linked/unlinked offsets and apply/delete/invert. Vector masks retain editable
+paths with independent density, feather, enable and linking fields. Raster and
+vector coverage compose together. Painting retains untouched sub-8-bit samples;
+subject analysis and some previews originate from 8-bit images. Separate vector
+selections, blend-if sliders, knockout and channel-exclusion fields remain absent.
 
 Guides, ICC bytes, resolution, color-mode label and JSON metadata are saved.
-Metadata holds notes, saved selections, some grid/develop settings and retained
+Metadata holds notes, saved selections, layer comps, grid/develop settings and retained
 import blocks. Pixel aspect ratio, independent alpha channels, complete ruler
 origin/grid configuration and persistent history snapshots are not dedicated
 model fields.
@@ -123,7 +131,10 @@ out-of-core 300,000-pixel editor. The Image/Canvas Size dialogs currently cap ea
 dimension at 30,000 and offer Qt nearest/smooth scaling. Separate bilinear,
 bicubic smoother/sharper and Lanczos implementations are absent, regardless of the
 current smooth option's UI label. Crop, canvas resize, image resize, trim and reveal
-all are implemented; some transforms rasterize nonpixel layers.
+all are implemented. Ordinary crop can preserve outside tiles or delete cropped
+pixels; preview/cancel does not mutate the document. Matrix transforms preserve
+native Text/Shape/Smart Object state. Perspective crop currently rasterizes type
+and reports that change.
 
 ## Compositor, adjustments and layer effects
 
@@ -168,8 +179,10 @@ Qt shapes and text render as editable native layers. Type currently stores one
 font/color run with basic alignment/orientation. Rich runs, complete paragraph
 attributes, kerning controls, text-on-path, real text warp and Adobe type-engine
 descriptors are absent. Type-to-shape is available. Smart objects store raster
-pixels and an optional linked path; they do not retain an editable embedded `.spe`
-subdocument with independent transform/reload and filter graph.
+pixels and an optional linked path. Original pixels are retained during matrix
+transforms, image resizing and Smart Filter edits, with reevaluated transform and
+filter records. An editable embedded `.spe` subdocument and comprehensive linked
+source reload manager remain absent.
 
 ## Canvas tools
 
@@ -177,25 +190,35 @@ subdocument with independent transform/reload and filter graph.
 | --- | --- |
 | Move / Artboard | Layer movement, auto-select, transform-control display and basic artboard creation. Advanced multi-layer alignment/distribution needs further work. |
 | Marquee / Lasso / selection tools | Rectangle, ellipse, row/column, free lasso, polygonal/magnetic lasso, wand, quick/object selections and selection boolean modifiers. Object/Subject selection uses a local color model, not semantic object recognition. |
-| Brush / Pencil / Erasers | Actual raster strokes, selection/mask clipping, one gesture per history entry, hardness/opacity/flow, spacing, angle/roundness, smoothing, HUD sizing and tablet pressure/tilt paths. Device behavior still needs physical tablet validation. |
-| Clone / Pattern / History | Clone source sampling, pattern painting and history-snapshot painting. History Brush uses the initial captured image; it does not let the user target arbitrary History snapshots. |
-| Healing / Content-Aware | Spot healing and fill use seeded exemplar patch searches. Healing Brush corrects the cloned patch's mean color. Patch and Content-Aware Move currently heal selected areas rather than providing explicit patch transport/move semantics. |
+| Brush / Pencil / Erasers | Native selection/mask clipping, one gesture per undo, hardness/opacity/flow, spacing, angle/roundness, smoothing, HUD sizing, brush blends including Behind/Clear and Shift straight strokes. Alt samples without painting; temporary Move/Hand preserves the selected tool. Tablet pressure/tilt paths need physical device validation. |
+| Clone / Pattern / History | Clone sampling, patterns and chosen History-state painting, including native channels and transparency. Art History Brush is a simplified variation without a complete artistic stroke engine. |
+| Healing / Content-Aware | Spot Healing and fill use seeded exemplar patch searches. Healing Brush corrects cloned mean color. Patch drags an explicit donor into the selection with color adaptation. Content-Aware Move transports selected pixels, fills the source hole and moves the selection in one undo. These CPU algorithms do not claim proprietary algorithm parity. |
 | Color / tonal paint tools | Color replacement, mixer, blur, sharpen, smudge, dodge, burn, sponge and red-eye use CPU pixel operations. |
-| Crop / Perspective Crop | Ordinary crop and four-corner projective resampling. Perspective crop reports type rasterization. There is no full crop overlay/rule system. |
+| Crop / Perspective Crop | Persistent dimmed preview, draggable corners/edges/body, ratios, output dimensions/DPI, swap/reset, optional pixel deletion, horizon-line straighten and automatic transparent/uniform-border crop and line-based straighten. Thirds/grid/diagonal/triangle/golden-ratio overlays have a remappable cycle key. Enter commits; Escape cancels without edits. Perspective crop previews four movable corners before projective resampling and reports type rasterization. Golden spiral, content-aware border expansion and semantic framing are absent. |
 | Type / Shapes / Pen | Editable type, geometric vector shapes, pen paths, cubic Curvature Pen and direct anchor/control editing. Freeform Pen remains polygonal; Type Mask behaves as a type layer; Frame is geometry rather than a placed-image frame container. |
 | Gradient / Bucket | Real fills respecting current selection. Complete multi-stop preset editing is not provided. |
 | Eyedropper / sampling | Actual canvas sampling; the 3D eyedropper uses ordinary 2D sampling. Advanced sampler/proof measurement workflows are limited. |
-| Hand / Rotate / Zoom | Pan, view rotation/flip, zoom, rulers, grid, draggable guides and animated selection outline. Snap metadata does not provide the complete requested snapping-target system. |
+| Hand / Rotate / Zoom | Pan, rotation/flip, zoom, fit-document/fit-selection, rulers, grid, guides and animated selection outline. Extras visibility preserves grid/guide preferences. The complete snapping-target system remains absent. |
 
 Subject/background actions expose an `ISubjectSelector` registration hook and use a
 local border-color/codebook flood fallback when no plugin is registered. No image
 is sent to a network service. Focus Area currently shares the subject fallback;
-it does not perform a separate focus-analysis algorithm. Select and Mask has
-basic refinement controls, not the complete dedicated workspace and view modes.
+it does not perform a separate focus-analysis algorithm. Select and Mask has a
+dedicated preview dialog with overlay, black, white, monochrome, layer and onion
+views, native add/subtract brush, edge/smart radius, smoothing, feather, contrast,
+shift-edge, local color decontamination and selection/mask/new-layer outputs.
+These local algorithms do not provide trained semantic hair/fur reconstruction
+or every interaction of a commercial masking workspace.
 
-Free Transform currently provides scale and rotation. Skew, Distort, Perspective,
-Warp and Puppet Warp menu commands use the Liquify editor rather than distinct
-matrix/pin transform tools. Liquify has warp, reconstruct, smooth, twirl, pucker,
+Free Transform has an inline nonmutating canvas preview with corner/edge handles,
+body movement, pivot, outside rotation, aspect/center modifiers and Enter/Escape
+commit/cancel. Skew uses an affine shear, and Distort/Perspective use real
+projective matrices. Selected raster masks transform independently;
+linked masks follow their content and unlinked masks retain document position.
+Text, shapes and Smart Objects retain their source and transform records. Group,
+artboard and full multilayer transforms remain limited. Warp and Puppet Warp
+still use the Liquify displacement editor rather than a stored pin/mesh system.
+Liquify has warp, reconstruct, smooth, twirl, pucker,
 bloat, freeze and thaw on a coarse inverse displacement mesh, with bilinear native
 16/32-bit output and undo. The mesh is not stored as a replayable smart filter.
 
@@ -256,9 +279,12 @@ chromatic-aberration correction and the full detail/masking workflow. Develop
 settings are saved in the document. “Open as smart object” creates a raster-backed
 smart-object layer rather than an embedded re-developable RAW object.
 
-Smart Filter conversion retains a smart-object layer, but filters currently bake
-their output into pixels and append JSON records. There is no reevaluable,
-reorderable, independently masked nondestructive filter graph. Neural Filters
+Smart Filters retain original Smart Object pixels and reevaluate an ordered saved
+stack at render time. Parameter edits, enable/disable, opacity, blend mode,
+reordering and deletion have preview and undo. Native files preserve the stack;
+Serika PSD blocks retain it alongside compatibility pixels. Independent per-filter
+masks, arbitrary dependency graphs and a complete external plugin filter system
+remain absent. Neural Filters
 reports that no model is installed; the subject-selector hook is available, but
 a general neural-filter model loader/registry is absent.
 
@@ -268,9 +294,11 @@ The headless `--batch action.json input-folder output-folder` path opens actual
 documents, runs supported steps and writes native output with failure exit codes.
 Unsupported steps fail explicitly. Recording does not capture arbitrary mouse
 gestures or every menu item; insert-stop/menu-item editing, complete open/save
-overrides and a general scripting API are absent. Fade changes layer opacity
-rather than the immediately preceding operation's blend. Auto-Align is a
-translation-only centering operation, not image registration.
+overrides and a general scripting API are absent. Fade blends the immediately
+preceding pixel effect against its before-state using the requested amount in
+Normal mode, retains layer opacity, and creates one undo step. Effects that change
+dimensions and non-pixel edits cannot be faded. Auto-Align is a translation-only
+centering operation, not image registration.
 
 Preference pages exist, with functional theme, Home, recovery, history, export,
 linear blending and selected unit/grid settings. Several pages are lightweight
@@ -291,9 +319,12 @@ reports them, and should not be interpreted as a count of complete features.
 | --- | --- |
 | [core_tests.cpp](../tests/core_tests.cpp) | 27 blend vectors in 8/16 bits; sparse/COW/exact tiles; masks/clipping/group/artboard behavior; transaction/cancel/history/saved revisions; selections; selected adjustments; text/shapes; resizing; composite cache regressions. |
 | [io_tests.cpp](../tests/io_tests.cpp) | Native full-state/float round-trip and corruption; PSD/PSB precision/compression/masks/groups/unknown tags; raster/TGA/HDR; multipage/frame/PDF imports; genuine synthetic-DNG decode; Develop/filter properties. |
-| [canvas_tests.cpp](../tests/canvas_tests.cpp) | Pixel/vector gestures, brush coalescing and opacity, masks/selections, clone/healing/content-aware, subject hook, direct/cubic paths, perspective crop, high-precision Liquify and Move/type option integration. |
+| [canvas_tests.cpp](../tests/canvas_tests.cpp) | Native 16/float mask paint, strokes/blends/modifiers, chosen History Brush source/transparency, actual Patch/Content-Aware Move transport, subject hook, paths, preview/cancel/undo crop, auto bounds/straighten, projective crop, inline transforms with linked/unlinked/mask-only/Smart Object behavior and Liquify. |
 | [actions_tests.cpp](../tests/actions_tests.cpp) | Parameter replay, selection-aware fill, rollback, transform, headless file processing, malformed actions and transparent 16-bit color. |
 | [ui_tests.cpp](../tests/ui_tests.cpp) | Home/chrome, four distinct Essentials dock geometries, accepted New Document dialog, live canvas, actual brush mouse gesture plus keyboard undo/redo, visibility/reorder and primary action registration. |
+| [shortcuts_tests.cpp](../tests/shortcuts_tests.cpp) | Stable IDs/default table, conflicts, JSON persistence, text inputs, remapping, multi-key chords, tool/crop scopes, blend/opacity/flow and press/release holds. |
+| [mask_tests.cpp](../tests/mask_tests.cpp) | Native coverage precision, density/feather, vector/raster composition, linking, saved selections, comps, Smart Filters and retained history pixels. |
+| [workflow_tests.cpp](../tests/workflow_tests.cpp) | Actual command workflows, native transforms/mask targeting, crop/refinement/Smart Filter dialogs, clipboard and document-state operations. |
 | [performance_bench.cpp](../tests/performance_bench.cpp) | Standalone 4000×3000 ten-layer cold composite, cached access, zoom resampling, brush dirty-region redraw and undo timings; JSON output. It measures current behavior and does not enforce unverified brief latency claims. |
 
 The raster compositor cache supports dirty-tile regional recomposition during

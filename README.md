@@ -19,14 +19,16 @@ Home offers an original layered **Amber Valley** project. Open an image, add a l
 
 ## Implemented workflows
 
-- Native document tabs, detachable windows, dockable panels, resettable workspaces, command palette, recent files, themes and keyboard shortcuts.
+- Native document tabs, detachable windows, dockable panels, resettable workspaces, command palette, recent files, themes and a configurable Photoshop-style shortcut registry with conflict detection, tool cycles, held modifiers and JSON import/export.
 - Sparse 256 × 256 tiles, 8-bit / 16-bit / float RGB, copy-on-write history, selections, masks, pixel / text / shape / group / adjustment / smart-object layer data.
 - CPU compositor with 27 blend modes, clipping, group isolation and pass-through, masks, adjustment layers and layer-effect rendering.
 - Brush, eraser, clone/heal, selection, crop and perspective crop, move, gradient/fill, pen/anchor editing, vector shapes, text, zoom/pan, rulers/guides and interactive Liquify.
 - Native SPE/SPEB with checksums and atomic saving; original PSD/PSB reader/writer; LibRaw RAW import and Develop; common raster formats, TGA, float HDR, SVG rasterization and PDF page import.
-- CPU filters and adjustments, action recording with parameter capture, validated action playback and folder batch processing.
+- CPU filters and adjustments, editable retained-source smart-filter stacks, action recording with parameter capture, validated action playback and folder batch processing.
+- Raster/vector masks with density, feather and linking; native 8/16/float selection coverage; Select and Mask preview/edge brush/output modes; persistent selection channels and layer comps.
+- Preview-first crop with ratios, output size, overlays, straighten and automatic bounds detection; inline Free Transform handles; real Patch and Content-Aware Move transport.
 
-Several specialist operations use simplified CPU algorithms. The status document lists material limits, including Adobe descriptor fidelity, smart-filter replay, color modes, selections, advanced typography, GPU acceleration and packaging verification.
+Several specialist operations use simplified CPU algorithms. The status document lists material limits, including Adobe descriptor fidelity, embedded subdocuments, color modes, advanced typography, GPU acceleration and packaging verification. The shortcut reference is in [docs/KEYBOARD-SHORTCUTS.md](docs/KEYBOARD-SHORTCUTS.md).
 
 ## Build
 
@@ -90,7 +92,7 @@ macOS packaging uses `scripts/package-macos.sh` or `cpack -G DragNDrop`; signing
 
 ## Verified results on this host
 
-On 8 October 2026, the Release build completed with compiler warnings treated as errors. All five CTest suites passed; QtTest reported **140 passing cases** (79 core, 28 I/O, 8 UI, 16 canvas and 9 actions, including lifecycle slots and data rows). Native Windows screenshots were captured and inspected. Portable launch and a headless resize/invert/SPE batch were exercised with the development-tool directories removed from PATH.
+On 8 October 2026, the Release build completed with compiler warnings treated as errors. All eight CTest suites passed; QtTest reported **227 passing checks** (79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows, including lifecycle slots and data rows). Native Windows screenshots were captured and inspected. Portable launch and a headless resize/invert/SPE batch were exercised with the development-tool directories removed from PATH.
 
 The Windows portable ZIP and WiX MSI were generated. MSI install/uninstall and file-association changes have not been exercised against the user's Windows installation. The installer and executable are unsigned.
 
@@ -98,7 +100,7 @@ The ten-layer benchmark on the host's AMD Ryzen 5 5500U measured 539 ms cold com
 
 ## Tests and performance
 
-CTest runs five QtTest suites: document/compositor, formats, native UI, canvas/tools and actions. Tests exercise high-precision samples, blend formulas, history isolation, corrupt files, PSD/PSB channels and masks, synthetic DNG decoding, PDF and raster imports, canvas gestures, real dialog acceptance, layer order and headless actions. Passing tests establish those behaviors; they do not certify all items in the supplied brief.
+CTest runs eight QtTest suites: document/compositor, formats, native UI, canvas/tools, actions, shortcuts, masks and integrated workflows. Tests exercise high-precision samples, blend formulas, history isolation, corrupt files, PSD/PSB channels and masks, synthetic DNG decoding, PDF and raster imports, canvas gestures, crop commit/cancel, linked/unlinked mask transforms, retained smart sources, actual dialog cancellation/acceptance, shortcut remapping, layer order, clipboard coordinates and headless actions. Passing tests establish those behaviors; they do not certify all items in the supplied brief.
 
 ```powershell
 ./build/performance_bench.exe -platform offscreen --output docs/performance.json

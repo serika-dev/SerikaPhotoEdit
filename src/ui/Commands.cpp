@@ -1,6 +1,11 @@
 #include "MainWindow.h"
+#include "actions/ActionRunner.h"
+#include "document/TransformOperations.h"
 #include "io/FormatIO.h"
+#include "tools/LocalAlgorithms.h"
 #include "ui/dialogs/LiquifyDialog.h"
+#include "ui/dialogs/SmartFilterDialog.h"
+#include "ui/dialogs/TransformDialog.h"
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
@@ -23,6 +28,7 @@
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPageLayout>
 #include <QPrintDialog>
 #include <QPrinter>
@@ -40,11 +46,13 @@
 #include <cmath>
 namespace serika {
 static QImage alphaImage(const QImage &selection) {
-    QImage image(selection.size(), QImage::Format_RGBA8888);
+    QImage image(selection.size(), QImage::Format_RGBA32FPx4);
     image.fill(Qt::transparent);
-    for (int y = 0; y < image.height(); y++)
+    for (int y = 0; y < image.height(); y++) {
+        auto *row = reinterpret_cast<float *>(image.scanLine(y));
         for (int x = 0; x < image.width(); x++)
-            image.setPixelColor(x, y, QColor(0, 0, 0, qGray(selection.pixel(x, y))));
+            row[x * 4 + 3] = float(maskSample(selection, x, y));
+    }
     return image;
 }
 void MainWindow::runCommand(const QString &name) {
@@ -200,7 +208,7 @@ void MainWindow::runCommand(const QString &name) {
         d->undo();
         return;
     }
-    if (name == "Redo") {
+    if (name == "Redo" || name == "Step Forward") {
         d->redo();
         return;
     }
@@ -370,6 +378,34 @@ void MainWindow::runCommand(const QString &name) {
         d->addLayer(layerName);
         return;
     }
+    if (name == "Layer via Copy") {
+        if (!d->hasSelection()) {
+            d->duplicateActiveLayer();
+            return;
+        }
+        auto *sourceLayer = d->activeLayer();
+        if (!sourceLayer)
+            return;
+        auto image = d->layerImage(*sourceLayer).convertToFormat(QImage::Format_RGBA32FPx4);
+        const auto selectionOrigin = d->effectiveLayerOffset(*sourceLayer);
+        for (int y = 0; y < image.height(); ++y) {
+            auto *row = reinterpret_cast<float *>(image.scanLine(y));
+            for (int x = 0; x < image.width(); ++x)
+                row[4 * x + 3] *= maskSample(d->state.selection, qRound(x + selectionOrigin.x()),
+                                             qRound(y + selectionOrigin.y()));
+        }
+        const auto offset = sourceLayer->offset;
+        const auto title = sourceLayer->name + " copy";
+        image = image.convertToFormat(d->state.bitDepth == 32   ? QImage::Format_RGBA32FPx4
+                                      : d->state.bitDepth == 16 ? QImage::Format_RGBA64
+                                                                : QImage::Format_RGBA8888);
+        d->mutate(name, [d, image, offset, title] {
+            d->addLayer(title);
+            d->activeLayer()->pixels.setImage(image);
+            d->activeLayer()->offset = offset;
+        });
+        return;
+    }
     if (name == "Duplicate Layer") {
         d->duplicateActiveLayer();
         return;
@@ -405,28 +441,111 @@ void MainWindow::runCommand(const QString &name) {
         d->addMask();
         return;
     }
-    if (name == "Delete Layer Mask") {
-        d->mutate("Delete mask", [d] {
-            d->activeLayer()->mask = QImage();
-            d->activeLayer()->maskTarget = false;
+    if (name == "Delete Layer Mask" || name == "Apply Layer Mask") {
+        d->removeMask(name == "Apply Layer Mask");
+        return;
+    }
+    if (name == "Toggle Layer Mask") {
+        d->mutate("Toggle mask", [d] { d->activeLayer()->maskEnabled = !d->activeLayer()->maskEnabled; });
+        return;
+    }
+    if (name == "Invert Layer Mask") {
+        d->invertMask();
+        return;
+    }
+    if (name == "Load Selection from Layer Mask" || name == "Load Selection from Vector Mask") {
+        d->loadMaskSelection(name.contains("Vector"));
+        return;
+    }
+    if (name == "Add Vector Mask") {
+        QPainterPath path = layer->shape;
+        if (path.isEmpty()) {
+            const QRect bounds = d->hasSelection() ? d->selectionBounds() : QRect(QPoint(), d->state.size);
+            path.addRect(QRectF(bounds).translated(-d->effectiveLayerOffset(*layer)));
+        }
+        d->addVectorMask(path);
+        return;
+    }
+    if (name == "Delete Vector Mask" || name == "Toggle Vector Mask") {
+        d->mutate(name, [d, name] {
+            if (name.startsWith("Delete"))
+                d->activeLayer()->vectorMask = {};
+            else
+                d->activeLayer()->vectorMaskEnabled = !d->activeLayer()->vectorMaskEnabled;
         });
         return;
     }
-    if (name == "Apply Layer Mask") {
-        d->mutate("Apply mask", [d] {
+    if (name == "Apply Vector Mask") {
+        if (layer->vectorMask.isEmpty())
+            return;
+        Layer local = *layer;
+        local.offset = {};
+        const auto coverage =
+            renderedLayerMask(local, d->layerImage(*layer).size(), d->state.bitDepth, false, true);
+        d->mutate(name, [d, coverage] {
             auto *l = d->activeLayer();
-            if (l->mask.isNull())
-                return;
-            auto image = d->layerImage(*l);
-            auto mask = alphaImage(l->mask);
-            QPainter painter(&image);
-            painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            painter.drawImage(-l->offset, mask);
-            painter.end();
+            auto image = d->layerImage(*l).convertToFormat(QImage::Format_RGBA32FPx4);
+            for (int y = 0; !coverage.isNull() && y < image.height(); ++y) {
+                auto *row = reinterpret_cast<float *>(image.scanLine(y));
+                for (int x = 0; x < image.width(); ++x)
+                    row[4 * x + 3] *= maskSample(coverage, x, y);
+            }
+            image = image.convertToFormat(d->state.bitDepth == 32   ? QImage::Format_RGBA32FPx4
+                                          : d->state.bitDepth == 16 ? QImage::Format_RGBA64
+                                                                    : QImage::Format_RGBA8888);
             l->pixels.setImage(image);
-            l->mask = QImage();
-            l->maskTarget = false;
+            l->kind = LayerKind::Pixel;
+            l->parameters.remove("contentTransform");
+            l->smartFilters = {};
+            l->vectorMask = {};
         });
+        return;
+    }
+    if (name == "Delete Selected Content" || name == "Fill Foreground" || name == "Fill Background") {
+        if (name == "Delete Selected Content" && !d->hasSelection() && !layer->maskTarget &&
+            c->tool() == "Move") {
+            d->removeActiveLayer();
+            return;
+        }
+        QString error;
+        QJsonObject step{
+            {"command", name == "Delete Selected Content" ? "clear" : "fill"},
+            {"parameters",
+             QJsonObject{{"color",
+                          (name == "Fill Background" ? m_background : m_foreground).name(QColor::HexArgb)}}}};
+        if (!ActionRunner::execute(d, step, &error))
+            showMessage(error);
+        return;
+    }
+    if (name.startsWith("Select ") && name.endsWith(" Layer")) {
+        const int target = name == "Select Previous Layer" ? d->state.activeIndex - 1
+                           : name == "Select Next Layer"   ? d->state.activeIndex + 1
+                           : name == "Select Top Layer"    ? d->state.layers.size() - 1
+                           : name == "Select Bottom Layer" ? 0
+                                                           : -1;
+        if (target >= 0 && target < d->state.layers.size())
+            d->setActiveIndex(target);
+        return;
+    }
+    if (name == "Fit Selection") {
+        c->fitSelection();
+        return;
+    }
+    if (name == "Auto Crop Transparent" || name == "Auto Crop Content" || name == "Auto Straighten") {
+        selectTool("Crop");
+        const bool found = name == "Auto Crop Transparent" ? c->autoCropTransparent()
+                           : name == "Auto Crop Content"   ? c->autoCropContent()
+                                                           : c->autoStraighten();
+        if (!found)
+            showMessage("No crop boundary or straightening angle was detected.");
+        return;
+    }
+    if (name == "Commit Crop") {
+        c->commitCrop();
+        return;
+    }
+    if (name == "Cancel Crop") {
+        c->cancelCrop();
         return;
     }
     if (name == "Create Clipping Mask") {
@@ -441,14 +560,46 @@ void MainWindow::runCommand(const QString &name) {
         d->mergeDown();
         return;
     }
-    if (name == "Flatten Image" || name == "Merge Visible") {
+    if (name == "Flatten Image") {
         d->flatten();
+        return;
+    }
+    if (name == "Merge Visible") {
+        const auto image = d->composite();
+        QSet<quint64> keep;
+        for (const auto &candidate : d->state.layers) {
+            bool visible = candidate.visible;
+            quint64 parent = candidate.parentId;
+            QSet<quint64> visited;
+            while (parent && !visited.contains(parent)) {
+                visited.insert(parent);
+                const int index = d->indexForId(parent);
+                if (index < 0)
+                    break;
+                visible = visible && d->state.layers[index].visible;
+                parent = d->state.layers[index].parentId;
+            }
+            if (!visible) {
+                keep.insert(candidate.id);
+                keep.unite(visited);
+            }
+        }
+        d->mutate("Merge visible", [&] {
+            for (int index = int(d->state.layers.size()) - 1; index >= 0; --index)
+                if (!keep.contains(d->state.layers[index].id))
+                    d->state.layers.removeAt(index);
+            d->state.activeIndex = int(d->state.layers.size()) - 1;
+            d->addLayer("Merged visible");
+            d->activeLayer()->parentId = 0;
+            d->activeLayer()->pixels.setImage(image);
+        });
         return;
     }
     if (name == "Stamp Visible") {
         auto image = d->composite();
         d->mutate("Stamp visible", [d, image] {
             d->addLayer("Stamp visible");
+            d->activeLayer()->parentId = 0;
             d->activeLayer()->pixels.setImage(image);
         });
         return;
@@ -457,16 +608,47 @@ void MainWindow::runCommand(const QString &name) {
         QVector<quint64> ids;
         for (auto *i : m_layers->selectedItems())
             ids << i->data(1, Qt::UserRole).toULongLong();
-        if (ids.isEmpty())
-            ids << layer->id;
-        d->mutate("Group layers", [d, ids] {
+        if (!ids.contains(layer->id))
+            ids = {layer->id};
+        QSet<quint64> selected(ids.begin(), ids.end());
+        QHash<quint64, QPointF> positions;
+        quint64 commonParent = 0;
+        bool first = true;
+        for (quint64 id : ids) {
+            const int index = d->indexForId(id);
+            if (index < 0)
+                continue;
+            const auto &candidate = d->state.layers[index];
+            quint64 parent = candidate.parentId;
+            QSet<quint64> visited;
+            bool nested = false;
+            while (parent && !visited.contains(parent)) {
+                visited.insert(parent);
+                if (selected.contains(parent)) {
+                    nested = true;
+                    break;
+                }
+                const int ancestor = d->indexForId(parent);
+                parent = ancestor < 0 ? 0 : d->state.layers[ancestor].parentId;
+            }
+            if (nested)
+                continue;
+            positions[id] = d->effectiveLayerOffset(candidate);
+            commonParent = first ? candidate.parentId : commonParent == candidate.parentId ? commonParent : 0;
+            first = false;
+        }
+        d->mutate("Group layers", [d, positions, commonParent] {
             d->addLayer("Group " + QString::number(d->state.layers.size()), LayerKind::Group);
             quint64 group = d->activeLayer()->id;
+            d->activeLayer()->parentId = commonParent;
             d->activeLayer()->blendMode = "Pass Through";
-            for (auto id : ids) {
+            const auto origin = d->effectiveLayerOffset(*d->activeLayer());
+            for (auto id : positions.keys()) {
                 int i = d->indexForId(id);
-                if (i >= 0)
+                if (i >= 0) {
                     d->state.layers[i].parentId = group;
+                    d->state.layers[i].offset = positions[id] - origin;
+                }
             }
         });
         return;
@@ -481,9 +663,18 @@ void MainWindow::runCommand(const QString &name) {
             int group = d->indexForId(id);
             if (group >= 0)
                 parent = d->state.layers[group].parentId;
-            for (auto &child : d->state.layers)
+            const int ancestor = d->indexForId(parent);
+            const QPointF parentOrigin =
+                ancestor < 0 ? QPointF() : d->effectiveLayerOffset(d->state.layers[ancestor]);
+            QHash<quint64, QPointF> origins;
+            for (const auto &child : d->state.layers)
                 if (child.parentId == id)
+                    origins[child.id] = d->effectiveLayerOffset(child);
+            for (auto &child : d->state.layers)
+                if (child.parentId == id) {
                     child.parentId = parent;
+                    child.offset = origins[child.id] - parentOrigin;
+                }
             if (group >= 0)
                 d->state.layers.removeAt(group);
             d->state.activeIndex = std::max(0, int(d->state.layers.size()) - 1);
@@ -501,11 +692,15 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "Convert to Smart Object" || name == "Convert for Smart Filters") {
-        d->mutate("Convert to smart object", [d] {
-            auto *l = d->activeLayer();
-            l->pixels.setImage(d->layerImage(*l));
-            l->kind = LayerKind::SmartObject;
-        });
+        d->convertToSmartObject();
+        return;
+    }
+    if (name == "Edit Smart Filters...") {
+        if (layer->kind != LayerKind::SmartObject || layer->locked)
+            return;
+        SmartFilterDialog dialog(d, this);
+        if (dialog.exec() == QDialog::Accepted)
+            d->mutate("Edit Smart Filters", [&] { d->activeLayer()->smartFilters = dialog.filters(); });
         return;
     }
     if (name == "Rasterize Layer") {
@@ -513,6 +708,8 @@ void MainWindow::runCommand(const QString &name) {
             auto *l = d->activeLayer();
             l->pixels.setImage(d->layerImage(*l));
             l->kind = LayerKind::Pixel;
+            l->smartFilters = {};
+            l->parameters.remove("contentTransform");
         });
         return;
     }
@@ -550,20 +747,12 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "Deselect") {
-        if (d->hasSelection()) {
-            d->state.metadata["lastSelection"] = QString::fromLatin1([&] {
-                QByteArray bytes;
-                QBuffer b(&bytes);
-                b.open(QIODevice::WriteOnly);
-                d->state.selection.save(&b, "PNG");
-                return bytes;
-            }()
-                                                                         .toBase64());
-        }
         d->deselect();
         return;
     }
     if (name == "Reselect") {
+        if (d->reselect())
+            return;
         QImage mask;
         mask.loadFromData(QByteArray::fromBase64(d->state.metadata["lastSelection"].toString().toLatin1()),
                           "PNG");
@@ -579,8 +768,13 @@ void MainWindow::runCommand(const QString &name) {
         m_layers->selectAll();
         return;
     }
-    if (name == "Subject" || name == "Focus Area...") {
+    if (name == "Subject") {
         c->selectSubject();
+        return;
+    }
+    if (name == "Focus Area...") {
+        d->setSelection(selectFocusAreaLocally(d->composite()));
+        selectAndMask();
         return;
     }
     if (name == "Remove Background") {
@@ -593,13 +787,13 @@ void MainWindow::runCommand(const QString &name) {
     }
     if (name == "New Selection from Layer") {
         auto image = d->layerImage(*layer);
-        QImage mask(d->state.size, QImage::Format_Grayscale8);
-        mask.fill(0);
+        const auto origin = d->effectiveLayerOffset(*layer);
+        QImage mask = makeMask(d->state.size, d->state.bitDepth);
         for (int y = 0; y < image.height(); y++)
             for (int x = 0; x < image.width(); x++) {
-                int sx = qRound(x + layer->offset.x()), sy = qRound(y + layer->offset.y());
+                int sx = qRound(x + origin.x()), sy = qRound(y + origin.y());
                 if (mask.rect().contains(sx, sy))
-                    mask.scanLine(sy)[sx] = uchar(image.pixelColor(x, y).alpha());
+                    setMaskSample(mask, sx, sy, image.pixelColor(x, y).alphaF());
             }
         d->setSelection(mask);
         return;
@@ -612,30 +806,19 @@ void MainWindow::runCommand(const QString &name) {
             QInputDialog::getText(this, "Save selection", "Channel name", QLineEdit::Normal, "Alpha 1", &ok);
         if (!ok || n.isEmpty())
             return;
-        QByteArray bytes;
-        QBuffer buffer(&bytes);
-        buffer.open(QIODevice::WriteOnly);
-        d->state.selection.save(&buffer, "PNG");
-        d->mutate("Save selection", [d, n, bytes] {
-            auto channels = d->state.metadata["selectionChannels"].toObject();
-            channels[n] = QString::fromLatin1(bytes.toBase64());
-            d->state.metadata["selectionChannels"] = channels;
-        });
+        d->saveSelection(n);
         return;
     }
     if (name == "Load Selection...") {
-        auto channels = d->state.metadata["selectionChannels"].toObject();
-        if (channels.isEmpty()) {
+        const auto names = d->savedSelectionNames();
+        if (names.isEmpty()) {
             showMessage("No saved selection channels.");
             return;
         }
         bool ok;
-        auto n = QInputDialog::getItem(this, "Load selection", "Channel", channels.keys(), 0, false, &ok);
-        if (ok) {
-            QImage mask;
-            mask.loadFromData(QByteArray::fromBase64(channels[n].toString().toLatin1()), "PNG");
-            d->setSelection(mask);
-        }
+        const auto n = QInputDialog::getItem(this, "Load selection", "Channel", names, 0, false, &ok);
+        if (ok)
+            d->loadSelection(n);
         return;
     }
     if (name == "Color Range...") {
@@ -669,25 +852,23 @@ void MainWindow::runCommand(const QString &name) {
                     : QInputDialog::getInt(this, name, "Radius (px)", 3, 1, 100, 1, &ok);
         if (!ok)
             return;
-        auto original = d->state.selection;
-        auto source = original.convertToFormat(QImage::Format_RGBA8888);
-        QImage result;
-        if (name == "Feather..." || name == "Smooth...")
-            result = applyFilter(source, "Gaussian Blur", QJsonObject{{"radius", r}});
-        else if (name == "Contract...")
-            result = applyFilter(source, "Minimum", QJsonObject{{"radius", r}});
+        QJsonObject params;
+        if (name == "Feather...")
+            params["feather"] = r;
+        else if (name == "Smooth...")
+            params["smooth"] = r;
         else
-            result = applyFilter(source, "Maximum", QJsonObject{{"radius", r}});
-        result = result.convertToFormat(QImage::Format_Grayscale8);
+            params["shiftEdge"] = name == "Contract..." ? -r : r;
         if (name == "Border...") {
-            auto inner = applyFilter(source, "Minimum", QJsonObject{{"radius", r}})
-                             .convertToFormat(QImage::Format_Grayscale8);
-            for (int y = 0; y < result.height(); y++)
-                for (int x = 0; x < result.width(); x++)
-                    result.scanLine(y)[x] =
-                        uchar(std::max(0, int(result.constScanLine(y)[x]) - int(inner.constScanLine(y)[x])));
-        }
-        d->mutate(name, [d, result] { d->state.selection = result; });
+            const auto outer = refineMask(d->state.selection, QJsonObject{{"shiftEdge", r}}),
+                       inner = refineMask(d->state.selection, QJsonObject{{"shiftEdge", -r}});
+            auto result = makeMask(d->state.size, d->state.bitDepth);
+            for (int y = 0; y < result.height(); ++y)
+                for (int x = 0; x < result.width(); ++x)
+                    setMaskSample(result, x, y, qMax(0., maskSample(outer, x, y) - maskSample(inner, x, y)));
+            d->setSelection(result);
+        } else
+            d->refineSelection(params);
         return;
     }
     if (name == "Fill...") {
@@ -712,30 +893,39 @@ void MainWindow::runCommand(const QString &name) {
         QImage placed(d->state.size, image.format());
         placed.fill(Qt::transparent);
         QPainter p(&placed);
-        p.drawImage(name == "Copy Merged" ? QPointF() : layer->offset, image);
+        p.drawImage(name == "Copy Merged" ? QPointF() : d->effectiveLayerOffset(*layer), image);
         if (d->hasSelection()) {
             p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
             p.drawImage(0, 0, alphaImage(d->state.selection));
         }
         p.end();
         auto bounds = d->hasSelection() ? d->selectionBounds() : placed.rect();
-        qApp->clipboard()->setImage(placed.copy(bounds));
+        auto *mime = new QMimeData;
+        mime->setImageData(placed.copy(bounds));
+        mime->setData("application/x-serika-clipboard-origin",
+                      QJsonDocument(QJsonObject{{"x", bounds.x()}, {"y", bounds.y()}}).toJson());
+        qApp->clipboard()->setMimeData(mime);
         if (name == "Cut" || name == "Layer via Cut") {
+            if (layer->locked || layer->lockAlpha)
+                return;
             d->mutate("Cut", [d, bounds, placed, name] {
                 auto *l = d->activeLayer();
                 auto source = d->layerImage(*l);
                 QPainter paint(&source);
                 paint.setCompositionMode(QPainter::CompositionMode_DestinationOut);
                 if (d->hasSelection())
-                    paint.drawImage(-l->offset, alphaImage(d->state.selection));
+                    paint.drawImage(-d->effectiveLayerOffset(*l), alphaImage(d->state.selection));
                 else
                     paint.fillRect(source.rect(), Qt::black);
                 paint.end();
                 l->pixels.setImage(source);
+                l->kind = LayerKind::Pixel;
+                l->parameters.remove("contentTransform");
+                l->smartFilters = {};
                 if (name == "Layer via Cut") {
                     d->addLayer("Cut layer");
                     d->activeLayer()->pixels.setImage(placed.copy(bounds));
-                    d->activeLayer()->offset = bounds.topLeft();
+                    d->activeLayer()->offset = bounds.topLeft() - d->effectiveLayerOffset(*d->activeLayer());
                 }
             });
         }
@@ -747,18 +937,31 @@ void MainWindow::runCommand(const QString &name) {
             showMessage("The clipboard contains no image.");
             return;
         }
-        d->mutate("Paste", [d, image, name] {
+        const auto originData = QJsonDocument::fromJson(qApp->clipboard()->mimeData()->data(
+                                                            "application/x-serika-clipboard-origin"))
+                                    .object();
+        const QPointF originalPosition(originData["x"].toDouble(), originData["y"].toDouble());
+        d->mutate("Paste", [d, image, name, originalPosition] {
             auto selection = d->state.selection;
             d->addLayer("Pasted layer");
             auto *l = d->activeLayer();
             l->pixels.setImage(image);
-            if (name != "Paste in Place")
+            const auto parentOffset = d->effectiveLayerOffset(*l);
+            if (name == "Paste in Place")
+                l->offset = originalPosition - parentOffset;
+            else
                 l->offset = QPointF((d->state.size.width() - image.width()) / 2.,
-                                    (d->state.size.height() - image.height()) / 2.);
+                                    (d->state.size.height() - image.height()) / 2.) -
+                            parentOffset;
             if (name == "Paste Into" || name == "Paste Outside") {
-                l->mask = selection;
-                if (name == "Paste Outside")
-                    l->mask.invertPixels();
+                const QPoint origin = d->effectiveLayerOffset(*l).toPoint();
+                l->mask = makeMask(image.size(), d->state.bitDepth);
+                for (int y = 0; y < image.height(); ++y)
+                    for (int x = 0; x < image.width(); ++x) {
+                        const qreal coverage =
+                            selection.isNull() ? 1 : maskSample(selection, x + origin.x(), y + origin.y());
+                        setMaskSample(l->mask, x, y, name == "Paste Outside" ? 1 - coverage : coverage);
+                    }
             }
         });
         return;
@@ -768,45 +971,62 @@ void MainWindow::runCommand(const QString &name) {
         d->state.metadata.remove("developCancelled");
         return;
     }
-    if (name == "Liquify..." || name == "Puppet Warp..." || name == "Warp..." || name == "Distort..." ||
-        name == "Skew..." || name == "Perspective...") {
+    if (name == "Liquify..." || name == "Puppet Warp..." || name == "Warp...") {
         auto image = LiquifyDialog::edit(d->layerImage(*layer), this);
         if (!image.isNull())
             d->mutate(name, [d, image] {
                 d->activeLayer()->pixels.setImage(image);
                 d->activeLayer()->kind = LayerKind::Pixel;
+                d->activeLayer()->parameters.remove("contentTransform");
+                d->activeLayer()->smartFilters = {};
             });
         return;
     }
-    if (name == "Free Transform..." || name == "Scale..." || name == "Rotate..." || name == "Warp Text...") {
-        transformDialog();
+    if (name == "Free Transform..." || name == "Scale..." || name == "Rotate..." || name == "Distort..." ||
+        name == "Skew..." || name == "Perspective...") {
+        if (!c->beginTransform(name.left(name.size() - 3)))
+            showMessage("Select an unlocked pixel, text, shape, or Smart Object layer to transform.");
+        return;
+    }
+    if (name == "Warp Text...") {
+        TransformDialog dialog(d->layerImage(*layer), name.left(name.size() - 3), this);
+        if (dialog.exec() == QDialog::Accepted) {
+            QString error;
+            const auto matrix = dialog.resultTransform();
+            if (!applyLayerTransform(d, matrix, &error))
+                showMessage(error);
+            else
+                recordStep("transform", {}, QJsonObject{{"matrix", transformJson(matrix)}});
+        }
         return;
     }
     if (name == "Transform Selection...") {
         if (!d->hasSelection())
             return;
-        bool ok;
-        int percent = QInputDialog::getInt(this, "Transform selection", "Scale (%)", 100, 1, 1000, 1, &ok);
-        if (!ok)
+        TransformDialog dialog(d->state.selection, "Transform Selection", this);
+        if (dialog.exec() != QDialog::Accepted)
             return;
-        auto scaled = d->state.selection.scaled(d->state.selection.size() * percent / 100.,
-                                                Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        QImage result(d->state.size, QImage::Format_Grayscale8);
-        result.fill(0);
+        QImage result = makeMask(d->state.size, 32);
         QPainter p(&result);
-        p.drawImage(QPoint((result.width() - scaled.width()) / 2, (result.height() - scaled.height()) / 2),
-                    scaled);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.setTransform(dialog.resultTransform());
+        p.drawImage(QPoint(), d->state.selection);
         p.end();
-        d->setSelection(result);
+        d->setSelection(normalizeMask(result, d->state.bitDepth));
         return;
     }
     if (name == "Flip Horizontal" || name == "Flip Vertical") {
-        d->mutate(name, [d, name] {
-            auto *l = d->activeLayer();
-            l->pixels.setImage(
-                d->layerImage(*l).mirrored(name == "Flip Horizontal", name == "Flip Vertical"));
-            l->kind = LayerKind::Pixel;
-        });
+        const auto extent =
+            layer->maskTarget && !layer->mask.isNull() ? layer->mask.size() : d->layerImage(*layer).size();
+        const bool horizontal = name == "Flip Horizontal";
+        const auto transform =
+            QTransform::fromScale(horizontal ? -1 : 1, horizontal ? 1 : -1) *
+            QTransform::fromTranslate(horizontal ? extent.width() : 0, horizontal ? 0 : extent.height());
+        QString error;
+        if (!applyLayerTransform(d, transform, &error))
+            showMessage(error);
+        else
+            recordStep("transform", {}, {{"matrix", transformJson(transform)}});
         return;
     }
     if (name == "Image Size..." || name == "Canvas Size...") {
@@ -998,9 +1218,9 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "Extras") {
-        m_grid = !m_grid;
-        c->setShowGrid(m_grid);
-        c->setShowGuides(m_grid);
+        c->setProperty("showExtras",
+                       c->property("showExtras").isValid() && !c->property("showExtras").toBool());
+        c->update();
         return;
     }
     if (name == "New Guide...") {
@@ -1048,11 +1268,40 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "Fade...") {
+        if (layer->kind != LayerKind::Pixel || layer->locked || !d->canUndo()) {
+            showMessage("Fade is available after editing pixels on an unlocked raster layer.");
+            return;
+        }
+        const auto previous = d->historyLayerImage(layer->id, int(d->historyNames().size()) - 2);
+        const auto current = layer->pixels.image();
+        if (previous.isNull() || previous.size() != current.size()) {
+            showMessage("The last operation changed the layer dimensions and cannot be faded.");
+            return;
+        }
         bool ok;
-        int opacity = QInputDialog::getInt(this, "Fade active layer", "Opacity (%)",
-                                           qRound(layer->opacity * 100), 0, 100, 1, &ok);
-        if (ok)
-            d->mutate("Fade", [d, opacity] { d->activeLayer()->opacity = opacity / 100.; });
+        int opacity =
+            QInputDialog::getInt(this, "Fade last pixel edit", "Effect opacity (%)", 100, 0, 100, 1, &ok);
+        if (ok) {
+            QImage result = current.convertToFormat(QImage::Format_RGBA32FPx4);
+            const auto before = previous.convertToFormat(QImage::Format_RGBA32FPx4);
+            const float amount = opacity / 100.f;
+            for (int y = 0; y < result.height(); ++y) {
+                auto *row = reinterpret_cast<float *>(result.scanLine(y));
+                const auto *old = reinterpret_cast<const float *>(before.constScanLine(y));
+                for (int x = 0; x < result.width(); ++x) {
+                    const float oldAlpha = old[x * 4 + 3], newAlpha = row[x * 4 + 3];
+                    const float alpha = oldAlpha * (1 - amount) + newAlpha * amount;
+                    for (int channel = 0; channel < 3; ++channel)
+                        row[x * 4 + channel] = alpha > 0 ? (old[x * 4 + channel] * oldAlpha * (1 - amount) +
+                                                            row[x * 4 + channel] * newAlpha * amount) /
+                                                               alpha
+                                                         : 0;
+                    row[x * 4 + 3] = alpha;
+                }
+            }
+            d->mutate("Fade",
+                      [&] { d->activeLayer()->pixels.setImage(result.convertToFormat(current.format())); });
+        }
         return;
     }
     if (name == "Auto-Align Layers") {

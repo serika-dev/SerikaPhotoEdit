@@ -1,4 +1,5 @@
 #include "io/FormatInternal.h"
+#include "io/LayerExtras.h"
 #include <QBuffer>
 #include <QColorSpace>
 #include <QDataStream>
@@ -80,9 +81,10 @@ QJsonObject layerHeader(const Layer &l) {
     o["parameters"] = l.parameters;
     o["effects"] = l.effects;
     o["linkedPath"] = l.linkedPath;
+    o["extras"] = layerExtras(l);
     return o;
 }
-Layer readLayerHeader(const QJsonObject &o) {
+Layer readLayerHeader(const QJsonObject &o, bool *valid) {
     Layer l;
     l.id = o["id"].toString().toULongLong();
     l.name = o["name"].toString();
@@ -112,6 +114,7 @@ Layer readLayerHeader(const QJsonObject &o) {
     l.parameters = o["parameters"].toObject();
     l.effects = o["effects"].toObject();
     l.linkedPath = o["linkedPath"].toString();
+    *valid = restoreLayerExtras(l, o["extras"].toObject());
     return l;
 }
 // The pixel payload preserves the Qt format (including float pixels), row alignment,
@@ -330,7 +333,10 @@ Document *readNative(const QString &path, QString *error, QObject *parent) {
     doc->historyLimit = h["historyLimit"].toInt(50);
     QHash<quint64, int> indices;
     for (const auto &v : h["layers"].toArray()) {
-        auto l = readLayerHeader(v.toObject());
+        bool validExtras = true;
+        auto l = readLayerHeader(v.toObject(), &validExtras);
+        if (!validExtras)
+            return fail("Invalid native mask or smart-object metadata.");
         if (l.id == 0 || indices.contains(l.id) || int(l.kind) < 0 ||
             int(l.kind) > int(LayerKind::Artboard) || (!l.pixels.size.isEmpty() && !validSize(l.pixels.size)))
             return fail("Invalid or duplicate SPE layer.");

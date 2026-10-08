@@ -6,6 +6,14 @@
 #include <QTransform>
 #include <QWidget>
 namespace serika {
+struct CropSettings {
+    QSizeF ratio;
+    QSize outputSize;
+    qreal resolution = 0;
+    bool deleteCroppedPixels = false;
+    QString overlay = "Thirds";
+    qreal angle = 0;
+};
 class CanvasView : public QWidget {
     Q_OBJECT
   public:
@@ -32,6 +40,7 @@ class CanvasView : public QWidget {
     void setZoom(qreal zoom);
     qreal zoom() const;
     void fitToView();
+    void fitSelection();
     void resetView();
     void rotateView(qreal degrees);
     void flipView();
@@ -43,11 +52,44 @@ class CanvasView : public QWidget {
     void removeBackground();
     void contentAwareFill();
     void transformActive(qreal scale, qreal angle);
+    CropSettings cropSettings() const { return m_cropSettings; }
+    void setCropSettings(const CropSettings &settings);
+    bool hasCropPreview() const { return m_cropActive || m_perspectivePoints.size() == 4; }
+    QRectF cropPreviewRect() const { return m_cropRect; }
+    void setCropPreviewRect(QRectF rectangle);
+    void resetCrop();
+    void swapCropRatio();
+    void cycleCropOverlay();
+    void beginStraighten();
+    bool commitCrop();
+    void cancelCrop();
+    bool autoCropTransparent(bool preview = true);
+    bool autoCropContent(bool preview = true);
+    bool autoStraighten(bool preview = true);
+    enum class MaskPreview { None, Grayscale, Overlay };
+    void setMaskPreview(MaskPreview preview);
+    MaskPreview maskPreview() const { return m_layerMaskPreview; }
+    bool hasPendingInteraction() const;
+    void cancelInteraction();
+    void setBrushOpacityByNumber(int number, bool flow = false);
+    bool beginTransform(const QString &mode = "Free Transform");
+    bool hasTransformPreview() const { return m_transformActive; }
+    bool commitTransform();
+    void cancelTransform();
+    QTransform transformPreview() const { return m_previewTransform; }
+    qreal brushOpacity() const { return m_opacity; }
+    qreal brushFlow() const { return m_flow; }
+    int brushSize() const { return m_brushSize; }
+    qreal brushHardness() const { return m_hardness; }
   signals:
     void zoomChanged(qreal zoom);
     void colorPicked(QColor color);
     void cursorInfo(QPointF position, QColor color);
     void toolChanged(const QString &tool);
+    void cropPreviewChanged(bool active);
+    void cropSettingsChanged();
+    void brushSettingsChanged();
+    void transformPreviewChanged(bool active);
 
   protected:
     void paintEvent(QPaintEvent *) override;
@@ -93,6 +135,8 @@ class CanvasView : public QWidget {
     QPointF m_last;
     QPointF m_cursor;
     QPointF m_initialOffset;
+    QHash<quint64, QPointF> m_initialMaskOffsets;
+    QHash<quint64, QPointF> m_initialVectorMaskOffsets;
     QPointF m_cloneSource;
     bool m_hasCloneSource = false;
     QImage m_strokeSource;
@@ -121,6 +165,45 @@ class CanvasView : public QWidget {
     int m_pathElement = -1;
     QPainterPath m_initialPath;
     QPolygonF m_perspectivePoints;
+    CropSettings m_cropSettings;
+    QRectF m_cropRect;
+    QRectF m_initialCropRect;
+    bool m_cropActive = false;
+    int m_cropHandle = -1;
+    int m_perspectiveHandle = -1;
+    bool m_straightenArmed = false;
+    bool m_straightening = false;
+    bool m_cropRotating = false;
+    qreal m_initialCropAngle = 0;
+    MaskPreview m_layerMaskPreview = MaskPreview::None;
+    mutable QImage m_layerMaskPreviewCache;
+    mutable QImage m_layerMaskOverlayCache;
+    mutable Layer m_cachedMaskLayer;
+    mutable QSize m_cachedMaskCanvas;
+    bool m_transporting = false;
+    bool m_transportSelecting = false;
+    QImage m_transportMask;
+    QImage m_transportPreview;
+    QPointF m_transportDelta;
+    QPointF m_lastStrokePoint;
+    bool m_hasLastStrokePoint = false;
+    int m_numericOpacity = -1;
+    qint64 m_numericOpacityTime = 0;
+    bool m_numericOpacityFlow = false;
+    bool m_transformActive = false;
+    bool m_committingTransform = false;
+    QString m_transformMode;
+    quint64 m_transformLayerId = 0;
+    QPolygonF m_transformQuad;
+    QPolygonF m_initialTransformQuad;
+    QPointF m_transformPivot;
+    QPointF m_initialTransformPivot;
+    int m_transformHandle = -1;
+    QTransform m_previewTransform;
+    QImage m_transformSource;
+    QImage m_transformPreview;
+    DocumentState m_transformState;
+    QRectF m_transformBounds;
     QRectF activeLayerBounds() const;
     void dab(QPointF point);
     void drawStroke(QPointF from, QPointF to);
@@ -132,6 +215,16 @@ class CanvasView : public QWidget {
     void chooseSelectionOperation(Qt::KeyboardModifiers modifiers);
     void sampleColor(QPointF point);
     void perspectiveCrop();
+    int cropHandleAt(QPointF point) const;
+    void updateCropDrag(QPointF point, Qt::KeyboardModifiers modifiers);
+    void drawCropPreview(QPainter &painter);
+    void rotateDocumentContent(qreal angle);
+    void finishTransport();
+    QImage activeMaskPreview() const;
+    int transformHandleAt(QPointF point) const;
+    void updateTransformDrag(QPointF point, Qt::KeyboardModifiers modifiers);
+    void renderTransformPreview();
+    void drawTransformPreview(QPainter &painter);
     QTransform viewTransform() const;
 };
 QStringList toolNames();

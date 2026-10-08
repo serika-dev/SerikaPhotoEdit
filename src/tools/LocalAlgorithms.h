@@ -1,5 +1,6 @@
 #pragma once
 #include <QImage>
+#include <QJsonObject>
 #include <memory>
 
 namespace serika {
@@ -16,5 +17,6 @@ class ColorModelSubjectSelector final : public ISubjectSelector {
 using LocalSubjectSelector = ColorModelSubjectSelector;
 void registerSubjectSelector(std::shared_ptr<ISubjectSelector> selector);
 QImage selectSubjectLocally(const QImage &image);
+QImage selectFocusAreaLocally(const QImage &image, const QJsonObject &parameters = {});
 QImage synthesizePatches(const QImage &source, const QImage &mask);
 } // namespace serika

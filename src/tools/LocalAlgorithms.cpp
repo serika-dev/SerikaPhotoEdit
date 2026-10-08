@@ -1,4 +1,5 @@
 #include "LocalAlgorithms.h"
+#include "document/Document.h"
 #include <QColor>
 #include <QMutex>
 #include <QMutexLocker>
@@ -14,11 +15,14 @@ namespace serika {
 namespace {
 QMutex selectorMutex;
 std::shared_ptr<ISubjectSelector> customSelector;
+int coverageDepth(const QImage &image) {
+    return image.format() == QImage::Format_RGBA32FPx4 ? 32 : image.depth() > 32 ? 16 : 8;
+}
 int colorDistance(QRgb a, QRgb b) {
     const int r = qRed(a) - qRed(b), g = qGreen(a) - qGreen(b), bl = qBlue(a) - qBlue(b);
     return r * r + g * g + bl * bl;
 }
-int maskValue(const QImage &mask, int x, int y) { return mask.isNull() ? 0 : qGray(mask.pixel(x, y)); }
+qreal coverageAt(const QImage &mask, int x, int y) { return maskSample(mask, x, y); }
 } // namespace
 void registerSubjectSelector(std::shared_ptr<ISubjectSelector> selector) {
     QMutexLocker locker(&selectorMutex);
@@ -34,9 +38,10 @@ QImage selectSubjectLocally(const QImage &image) {
     QImage mask = selector ? selector->select(image) : fallback.select(image);
     if (mask.isNull())
         mask = fallback.select(image);
-    return mask.size() == image.size()
+    mask = mask.size() == image.size()
                ? mask
                : mask.scaled(image.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return normalizeMask(mask, coverageDepth(image));
 }
 
 QImage ColorModelSubjectSelector::select(const QImage &input) const {
@@ -121,26 +126,117 @@ QImage ColorModelSubjectSelector::select(const QImage &input) const {
         if (p.y() + 1 < h)
             enqueue(p.x(), p.y() + 1);
     }
-    QImage mask(w, h, QImage::Format_Grayscale8);
-    mask.fill(0);
+    QImage mask = makeMask({w, h}, coverageDepth(input));
     for (int y = 0; y < h; ++y) {
-        auto *row = mask.scanLine(y);
-        for (int x = 0; x < w; ++x)
-            row[x] = background[y * w + x] ? 0 : quint8(qAlpha(image.pixel(x, y)));
-    }
-    // A small majority filter removes isolated background speckles while preserving edges.
-    const QImage rough = mask;
-    for (int y = 1; y < h - 1; ++y) {
-        auto *row = mask.scanLine(y);
-        for (int x = 1; x < w - 1; ++x) {
-            int total = 0;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
-                    total += rough.constScanLine(y + dy)[x + dx];
-            row[x] = quint8(total / 9);
+        for (int x = 0; x < w; ++x) {
+            qreal coverage = background[y * w + x] ? 0 : 1;
+            if (coverage > 0 && x > 0 && y > 0 && x + 1 < w && y + 1 < h) {
+                // Recover fractional boundary coverage from a local foreground/background color line.
+                // Unlike blanket blur, this keeps enclosed same-colored regions selected and leaves
+                // thin contrastful strands intact.
+                double foreground[3]{}, backdrop[3]{};
+                int fgCount = 0, bgCount = 0;
+                for (int dy = -3; dy <= 3; ++dy)
+                    for (int dx = -3; dx <= 3; ++dx) {
+                        const int sx = std::clamp(x + dx, 0, w - 1), sy = std::clamp(y + dy, 0, h - 1);
+                        const QRgb sample = image.pixel(sx, sy);
+                        double *sum = background[sy * w + sx] ? backdrop : foreground;
+                        sum[0] += qRed(sample);
+                        sum[1] += qGreen(sample);
+                        sum[2] += qBlue(sample);
+                        if (background[sy * w + sx])
+                            ++bgCount;
+                        else
+                            ++fgCount;
+                    }
+                if (fgCount && bgCount) {
+                    const QRgb pixel = image.pixel(x, y);
+                    const double channels[3]{double(qRed(pixel)), double(qGreen(pixel)),
+                                             double(qBlue(pixel))};
+                    double numerator = 0, denominator = 0;
+                    for (int c = 0; c < 3; ++c) {
+                        const double bg = backdrop[c] / bgCount, delta = foreground[c] / fgCount - bg;
+                        numerator += (channels[c] - bg) * delta;
+                        denominator += delta * delta;
+                    }
+                    if (denominator > 100)
+                        coverage = std::clamp(numerator / denominator, 0., 1.);
+                }
+            }
+            setMaskSample(mask, x, y, coverage);
         }
     }
-    return mask.scaled(originalSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    mask = mask.scaled(originalSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    if (originalSize != image.size())
+        mask = refineMask(mask, {{"radius", 2}, {"smartRadius", true}}, input);
+    for (int y = 0; y < input.height(); ++y)
+        for (int x = 0; x < input.width(); ++x) {
+            qreal alpha;
+            if (input.format() == QImage::Format_RGBA64)
+                alpha = reinterpret_cast<const QRgba64 *>(input.constScanLine(y))[x].alpha() / 65535.;
+            else if (input.format() == QImage::Format_RGBA32FPx4)
+                alpha = reinterpret_cast<const float *>(input.constScanLine(y))[x * 4 + 3];
+            else
+                alpha = input.pixelColor(x, y).alphaF();
+            setMaskSample(mask, x, y, maskSample(mask, x, y) * alpha);
+        }
+    return mask;
+}
+
+QImage selectFocusAreaLocally(const QImage &input, const QJsonObject &parameters) {
+    if (input.isNull())
+        return {};
+    const QImage image = (input.width() > 1600 || input.height() > 1600
+                              ? input.scaled(1600, 1600, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                              : input)
+                             .convertToFormat(QImage::Format_RGBA8888);
+    const int width = image.width(), height = image.height();
+    std::vector<double> intensity(size_t(width) * height), energy(intensity.size());
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            const uchar *pixel = image.constScanLine(y) + x * 4;
+            intensity[size_t(y) * width + x] =
+                (.2126 * pixel[0] + .7152 * pixel[1] + .0722 * pixel[2]) / 255.;
+        }
+    std::vector<double> integral(size_t(width + 1) * (height + 1), 0);
+    for (int y = 0; y < height; ++y) {
+        double row = 0;
+        for (int x = 0; x < width; ++x) {
+            const auto sample = [&](int sx, int sy) {
+                return intensity[size_t(std::clamp(sy, 0, height - 1)) * width +
+                                 std::clamp(sx, 0, width - 1)];
+            };
+            const double laplacian =
+                4 * sample(x, y) - sample(x - 1, y) - sample(x + 1, y) - sample(x, y - 1) - sample(x, y + 1);
+            row += laplacian * laplacian;
+            integral[size_t(y + 1) * (width + 1) + x + 1] = row + integral[size_t(y) * (width + 1) + x + 1];
+        }
+    }
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            const int left = std::max(0, x - 7), top = std::max(0, y - 7), right = std::min(width, x + 8),
+                      bottom = std::min(height, y + 8);
+            const double sum =
+                integral[size_t(bottom) * (width + 1) + right] - integral[size_t(top) * (width + 1) + right] -
+                integral[size_t(bottom) * (width + 1) + left] + integral[size_t(top) * (width + 1) + left];
+            energy[size_t(y) * width + x] = sum / ((right - left) * (bottom - top));
+        }
+    std::vector<double> samples = energy;
+    const size_t percentile = samples.size() * 9 / 10;
+    std::nth_element(samples.begin(), samples.begin() + qsizetype(percentile), samples.end());
+    const double high = samples[percentile];
+    const double range = parameters.value("inFocusRange").toDouble(-1);
+    const double threshold = std::max(1e-6, high * (range < 0 ? .25 : std::clamp(range / 10., .02, 1.)));
+    QImage result = makeMask(image.size(), coverageDepth(input));
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            const double ratio = energy[size_t(y) * width + x] / threshold;
+            const double t = std::clamp((ratio - .3) / .7, 0., 1.);
+            setMaskSample(result, x, y, t * t * (3 - 2 * t) * image.constScanLine(y)[x * 4 + 3] / 255.);
+        }
+    result = result.scaled(input.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return refineMask(result, {{"feather", parameters.value("feather").toDouble(1)},
+                               {"shiftEdge", parameters.value("grow").toDouble()}});
 }
 
 QImage synthesizePatches(const QImage &input, const QImage &inputMask) {
@@ -148,13 +244,13 @@ QImage synthesizePatches(const QImage &input, const QImage &inputMask) {
         return input;
     const QImage source = input.convertToFormat(QImage::Format_ARGB32);
     QImage result = source;
-    const QImage mask = inputMask.convertToFormat(QImage::Format_Grayscale8);
+    const QImage mask = normalizeMask(inputMask);
     const int w = source.width(), h = source.height();
     QVector<quint8> unknown(w * h, 0);
     QVector<QPoint> pixels, donors;
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
-            if (maskValue(mask, x, y) > 127) {
+            if (coverageAt(mask, x, y) > .5) {
                 unknown[y * w + x] = 1;
                 pixels.append(QPoint(x, y));
             } else if ((x % 3) == 0 && (y % 3) == 0)
@@ -248,7 +344,16 @@ QImage synthesizePatches(const QImage &input, const QImage &inputMask) {
         const QPoint donor = nearest[p.y() * w + p.x()];
         if (donor.x() < 0)
             continue;
-        const qreal a = maskValue(mask, p.x(), p.y()) / 255.0;
+        const qreal a = coverageAt(mask, p.x(), p.y());
+        if (highDepth.format() == QImage::Format_RGBA32FPx4) {
+            float *pixel = reinterpret_cast<float *>(highDepth.scanLine(p.y())) + p.x() * 4;
+            const float *oldPixel = reinterpret_cast<const float *>(input.constScanLine(p.y())) + p.x() * 4;
+            const float *donorPixel =
+                reinterpret_cast<const float *>(input.constScanLine(donor.y())) + donor.x() * 4;
+            for (int c = 0; c < 4; ++c)
+                pixel[c] = float(oldPixel[c] * (1 - a) + donorPixel[c] * a);
+            continue;
+        }
         const QColor old = input.pixelColor(p), filled = input.pixelColor(donor);
         highDepth.setPixelColor(p, QColor::fromRgbF(old.redF() * (1 - a) + filled.redF() * a,
                                                     old.greenF() * (1 - a) + filled.greenF() * a,

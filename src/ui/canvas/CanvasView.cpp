@@ -1,6 +1,9 @@
 #include "CanvasView.h"
+#include "CropAlgorithms.h"
+#include "document/TransformOperations.h"
 #include "tools/LocalAlgorithms.h"
 #include <QApplication>
+#include <QDateTime>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QKeyEvent>
@@ -45,8 +48,6 @@ bool paintTool(const QString &tool) {
                         "Sponge",
                         "Healing Brush",
                         "Spot Healing",
-                        "Patch",
-                        "Content-Aware Move",
                         "Quick Selection",
                         "Red Eye"});
 }
@@ -58,19 +59,34 @@ bool selectionTool(const QString &tool) {
     return named(tool, {"Rectangular Marquee", "Elliptical Marquee", "Single Row", "Single Column", "Lasso",
                         "Polygonal Lasso", "Magnetic Lasso", "Object Selection"});
 }
+bool transportTool(const QString &tool) { return named(tool, {"Patch", "Content-Aware Move"}); }
 int selectionAt(const Document *document, int x, int y) {
     const QImage &mask = document->state.selection;
     if (mask.isNull())
         return 255;
     if (x < 0 || y < 0 || x >= mask.width() || y >= mask.height())
         return 0;
-    return mask.format() == QImage::Format_Grayscale8 ? mask.constScanLine(y)[x] : qGray(mask.pixel(x, y));
+    return qRound(maskSample(mask, x, y) * 255);
 }
 QRect documentRect(const Document *document) { return QRect(QPoint(), document->state.size); }
 QImage::Format paintingFormat(const Document *document) {
     return document->state.bitDepth == 16   ? QImage::Format_RGBA64
            : document->state.bitDepth == 32 ? QImage::Format_RGBA32FPx4
                                             : QImage::Format_ARGB32;
+}
+QImage paintCoverage(QSize size, int depth, const std::function<void(QPainter &)> &draw) {
+    if (depth > 32)
+        depth = 32;
+    QImage coverage(size, depth == 32 ? QImage::Format_RGBX32FPx4
+                          : depth > 8 ? QImage::Format_RGBX64
+                                      : QImage::Format_RGB32);
+    coverage.fill(Qt::black);
+    QPainter painter(&coverage);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    draw(painter);
+    painter.end();
+    return normalizeMask(coverage, depth);
 }
 QPointF effectiveOffset(const Document *document, const Layer &layer) {
     QPointF offset = layer.offset;
@@ -128,7 +144,9 @@ QRect alphaBounds(const QImage &image) {
 }
 QRectF layerBounds(const Document *document, const Layer &layer) {
     QRectF bounds;
-    if (layer.kind == LayerKind::Shape || layer.kind == LayerKind::Artboard)
+    if (layer.parameters.contains("contentTransform"))
+        bounds = alphaBounds(document->layerImage(layer));
+    else if (layer.kind == LayerKind::Shape || layer.kind == LayerKind::Artboard)
         bounds = layer.shape.boundingRect().adjusted(-layer.strokeWidth / 2, -layer.strokeWidth / 2,
                                                      layer.strokeWidth / 2, layer.strokeWidth / 2);
     else if (layer.kind == LayerKind::Pixel || layer.kind == LayerKind::SmartObject) {
@@ -170,6 +188,8 @@ CanvasView::CanvasView(Document *document, QWidget *parent) : QWidget(parent), m
     setAttribute(Qt::WA_OpaquePaintEvent);
     setMinimumSize(160, 120);
     connect(document, &Document::changed, this, [this] {
+        if (m_transformActive && !m_committingTransform)
+            cancelTransform();
         updateSelectionOutline();
         update();
     });
@@ -182,11 +202,16 @@ CanvasView::CanvasView(Document *document, QWidget *parent) : QWidget(parent), m
     updateSelectionOutline();
 }
 void CanvasView::setTool(const QString &tool) {
+    cancelTransform();
     if (m_dragging) {
         m_document->cancelTransaction();
         m_dragging = false;
     }
     m_tool = tool;
+    cancelCrop();
+    m_transporting = false;
+    m_transportSelecting = false;
+    m_transportPreview = {};
     m_lasso.clear();
     m_penLayerId = 0;
     m_penPath = {};
@@ -212,10 +237,20 @@ void CanvasView::setBackground(QColor color) { m_background = color; }
 void CanvasView::setBrushSize(int size) {
     m_brushSize = std::clamp(size, 1, 5000);
     update();
+    emit brushSettingsChanged();
 }
-void CanvasView::setBrushHardness(qreal hardness) { m_hardness = std::clamp(hardness, qreal(0), qreal(1)); }
-void CanvasView::setBrushOpacity(qreal opacity) { m_opacity = std::clamp(opacity, qreal(0), qreal(1)); }
-void CanvasView::setBrushFlow(qreal flow) { m_flow = std::clamp(flow, qreal(0), qreal(1)); }
+void CanvasView::setBrushHardness(qreal hardness) {
+    m_hardness = std::clamp(hardness, qreal(0), qreal(1));
+    emit brushSettingsChanged();
+}
+void CanvasView::setBrushOpacity(qreal opacity) {
+    m_opacity = std::clamp(opacity, qreal(0), qreal(1));
+    emit brushSettingsChanged();
+}
+void CanvasView::setBrushFlow(qreal flow) {
+    m_flow = std::clamp(flow, qreal(0), qreal(1));
+    emit brushSettingsChanged();
+}
 void CanvasView::setBrushSpacing(qreal spacing) { m_spacing = std::clamp(spacing, qreal(0.01), qreal(2)); }
 void CanvasView::setBrushAngle(qreal degrees) {
     m_brushAngle = degrees;
@@ -248,6 +283,421 @@ void CanvasView::setSurround(QColor color) {
     m_surround = color;
     update();
 }
+void CanvasView::setCropSettings(const CropSettings &settings) {
+    m_cropSettings = settings;
+    m_cropSettings.angle = std::clamp(settings.angle, qreal(-180), qreal(180));
+    if (m_cropSettings.ratio.width() <= 0 || m_cropSettings.ratio.height() <= 0)
+        m_cropSettings.ratio = {};
+    if (m_cropActive && !m_cropSettings.ratio.isEmpty()) {
+        const qreal ratio = m_cropSettings.ratio.width() / m_cropSettings.ratio.height();
+        const QPointF center = m_cropRect.center();
+        qreal width = m_cropRect.width(), height = width / ratio;
+        if (height > m_document->state.size.height()) {
+            height = m_document->state.size.height();
+            width = height * ratio;
+        }
+        m_cropRect = QRectF(center - QPointF(width / 2, height / 2), QSizeF(width, height));
+    }
+    emit cropSettingsChanged();
+    update();
+}
+void CanvasView::setCropPreviewRect(QRectF rectangle) {
+    m_cropRect = rectangle.normalized();
+    m_cropActive = m_cropRect.width() >= 1 && m_cropRect.height() >= 1;
+    emit cropPreviewChanged(hasCropPreview());
+    update();
+}
+void CanvasView::resetCrop() {
+    m_cropSettings.angle = 0;
+    setCropPreviewRect(QRectF(QPointF(), m_document->state.size));
+    setCropSettings(m_cropSettings);
+}
+void CanvasView::swapCropRatio() {
+    m_cropSettings.ratio.transpose();
+    m_cropSettings.outputSize.transpose();
+    setCropSettings(m_cropSettings);
+}
+void CanvasView::cycleCropOverlay() {
+    const QStringList overlays{"Thirds", "Grid", "Diagonal", "Triangle", "Golden Ratio", "None"};
+    m_cropSettings.overlay = overlays[(overlays.indexOf(m_cropSettings.overlay) + 1) % overlays.size()];
+    emit cropSettingsChanged();
+    update();
+}
+void CanvasView::beginStraighten() {
+    if (m_tool != "Crop")
+        setTool("Crop");
+    if (!m_cropActive)
+        resetCrop();
+    m_straightenArmed = true;
+    setCursor(Qt::CrossCursor);
+    update();
+}
+void CanvasView::cancelCrop() {
+    if (m_cropHandle >= 0 || m_perspectiveHandle >= 0 || m_straightening || m_cropRotating)
+        m_dragging = false;
+    m_cropActive = false;
+    m_cropRect = {};
+    m_cropHandle = -1;
+    m_perspectiveHandle = -1;
+    m_perspectivePoints.clear();
+    m_straightenArmed = false;
+    m_straightening = false;
+    m_cropRotating = false;
+    m_cropSettings.angle = 0;
+    emit cropPreviewChanged(false);
+    emit cropSettingsChanged();
+    update();
+}
+bool CanvasView::autoCropTransparent(bool preview) {
+    const QRect bounds = transparentContentBounds(m_document->composite());
+    if (bounds.isEmpty())
+        return false;
+    setTool("Crop");
+    setCropPreviewRect(bounds);
+    return preview || commitCrop();
+}
+bool CanvasView::autoCropContent(bool preview) {
+    const QRect bounds = uniformBorderContentBounds(m_document->composite());
+    if (bounds.isEmpty())
+        return false;
+    setTool("Crop");
+    setCropPreviewRect(bounds);
+    return preview || commitCrop();
+}
+bool CanvasView::autoStraighten(bool preview) {
+    const qreal angle = estimateStraightenAngle(m_document->composite());
+    if (std::abs(angle) < .05)
+        return false;
+    setTool("Crop");
+    m_cropSettings.angle = angle;
+    setCropPreviewRect(largestInscribedRotatedRectangle(m_document->state.size, angle));
+    emit cropSettingsChanged();
+    return preview || commitCrop();
+}
+void CanvasView::setMaskPreview(MaskPreview preview) {
+    m_layerMaskPreview = preview;
+    update();
+}
+bool CanvasView::hasPendingInteraction() const {
+    return m_dragging || hasCropPreview() || !m_perspectivePoints.isEmpty() || m_transformActive;
+}
+void CanvasView::cancelInteraction() {
+    cancelTransform();
+    if (m_dragging && !m_transporting && !m_transportSelecting && m_cropHandle == -1 && !m_straightening &&
+        !m_cropRotating)
+        m_document->cancelTransaction();
+    m_dragging = false;
+    m_moving = false;
+    m_transporting = false;
+    m_transportSelecting = false;
+    m_transportPreview = {};
+    m_transportMask = {};
+    m_lasso.clear();
+    m_penLayerId = 0;
+    m_penPath = {};
+    m_dragRect = {};
+    m_pathElement = -1;
+    cancelCrop();
+}
+void CanvasView::setBrushOpacityByNumber(int number, bool flow) {
+    if (number < 0 || number > 9)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool secondDigit =
+        m_numericOpacity >= 0 && now - m_numericOpacityTime < 650 && flow == m_numericOpacityFlow;
+    const int value = secondDigit ? m_numericOpacity * 10 + number : (number ? number * 10 : 100);
+    m_numericOpacity = secondDigit ? -1 : number;
+    m_numericOpacityTime = now;
+    m_numericOpacityFlow = flow;
+    if (flow)
+        setBrushFlow(value / 100.0);
+    else
+        setBrushOpacity(value / 100.0);
+}
+QImage CanvasView::activeMaskPreview() const {
+    const Layer *layer = m_document->activeLayer();
+    if (!layer) {
+        m_layerMaskPreviewCache = {};
+        m_layerMaskOverlayCache = {};
+        return {};
+    }
+    Layer positioned = *layer;
+    positioned.offset = effectiveOffset(m_document, *layer);
+    positioned.maskEnabled = true;
+    positioned.vectorMaskEnabled = true;
+    const Layer &cached = m_cachedMaskLayer;
+    if (!m_layerMaskPreviewCache.isNull() && m_cachedMaskCanvas == m_document->state.size &&
+        cached.id == positioned.id && cached.offset == positioned.offset &&
+        cached.mask.cacheKey() == positioned.mask.cacheKey() &&
+        cached.maskDensity == positioned.maskDensity && cached.maskFeather == positioned.maskFeather &&
+        cached.maskLinked == positioned.maskLinked && cached.maskOffset == positioned.maskOffset &&
+        cached.vectorMask == positioned.vectorMask &&
+        cached.vectorMaskDensity == positioned.vectorMaskDensity &&
+        cached.vectorMaskFeather == positioned.vectorMaskFeather &&
+        cached.vectorMaskLinked == positioned.vectorMaskLinked &&
+        cached.vectorMaskOffset == positioned.vectorMaskOffset)
+        return m_layerMaskPreviewCache;
+    const QImage mask = renderedLayerMask(positioned, m_document->state.size, 8);
+    m_cachedMaskLayer = positioned;
+    m_cachedMaskLayer.pixels = {};
+    m_cachedMaskLayer.parameters = {};
+    m_cachedMaskLayer.effects = {};
+    m_cachedMaskLayer.smartFilters = {};
+    m_cachedMaskCanvas = m_document->state.size;
+    m_layerMaskOverlayCache = {};
+    m_layerMaskPreviewCache = mask.isNull() ? makeMask(m_document->state.size, 8, 1) : mask;
+    return m_layerMaskPreviewCache;
+}
+int CanvasView::cropHandleAt(QPointF point) const {
+    if (!m_cropActive)
+        return -1;
+    const QList<QPointF> handles{m_cropRect.topLeft(),
+                                 m_cropRect.topRight(),
+                                 m_cropRect.bottomRight(),
+                                 m_cropRect.bottomLeft(),
+                                 {m_cropRect.center().x(), m_cropRect.top()},
+                                 {m_cropRect.right(), m_cropRect.center().y()},
+                                 {m_cropRect.center().x(), m_cropRect.bottom()},
+                                 {m_cropRect.left(), m_cropRect.center().y()}};
+    for (int i = 0; i < handles.size(); ++i)
+        if (QLineF(point, handles[i]).length() < 9 / m_zoom)
+            return i;
+    return m_cropRect.contains(point) ? 8 : 9;
+}
+void CanvasView::updateCropDrag(QPointF point, Qt::KeyboardModifiers modifiers) {
+    QRectF rectangle = m_initialCropRect;
+    const QPointF delta = point - m_start;
+    if (m_cropHandle == 8) {
+        rectangle.translate(delta);
+    } else if (m_cropHandle == 10) {
+        rectangle = QRectF(m_start, point).normalized();
+    } else {
+        if (m_cropHandle == 0 || m_cropHandle == 3 || m_cropHandle == 7)
+            rectangle.setLeft(point.x());
+        if (m_cropHandle == 1 || m_cropHandle == 2 || m_cropHandle == 5)
+            rectangle.setRight(point.x());
+        if (m_cropHandle == 0 || m_cropHandle == 1 || m_cropHandle == 4)
+            rectangle.setTop(point.y());
+        if (m_cropHandle == 2 || m_cropHandle == 3 || m_cropHandle == 6)
+            rectangle.setBottom(point.y());
+        if (modifiers.testFlag(Qt::AltModifier)) {
+            const QPointF center = m_initialCropRect.center();
+            rectangle =
+                QRectF(center - QPointF(std::abs(point.x() - center.x()), std::abs(point.y() - center.y())),
+                       center + QPointF(std::abs(point.x() - center.x()), std::abs(point.y() - center.y())));
+        }
+        rectangle = rectangle.normalized();
+    }
+    const QSizeF ratio = m_cropSettings.ratio;
+    if (m_cropHandle != 8 && (!ratio.isEmpty() || modifiers.testFlag(Qt::ShiftModifier))) {
+        const qreal aspect = ratio.isEmpty() ? 1 : ratio.width() / ratio.height();
+        qreal width = rectangle.width(), height = rectangle.height();
+        if (m_cropHandle == 4 || m_cropHandle == 6)
+            width = height * aspect;
+        else
+            height = width / aspect;
+        const bool fromRight = m_cropHandle == 0 || m_cropHandle == 3 || m_cropHandle == 7;
+        const bool fromBottom = m_cropHandle == 0 || m_cropHandle == 1 || m_cropHandle == 4;
+        QPointF anchor(fromRight ? rectangle.right() - width : rectangle.left(),
+                       fromBottom ? rectangle.bottom() - height : rectangle.top());
+        if (m_cropHandle == 10)
+            anchor = {point.x() < m_start.x() ? m_start.x() - width : m_start.x(),
+                      point.y() < m_start.y() ? m_start.y() - height : m_start.y()};
+        rectangle = QRectF(anchor, QSizeF(width, height));
+    }
+    if (rectangle.width() > .5 && rectangle.height() > .5)
+        m_cropRect = rectangle;
+    m_cropActive = true;
+    emit cropPreviewChanged(true);
+    update();
+}
+void CanvasView::drawCropPreview(QPainter &painter) {
+    if (!m_cropActive && m_perspectivePoints.size() != 4)
+        return;
+    QPainterPath inside;
+    if (m_tool == "Perspective Crop" && m_perspectivePoints.size() == 4)
+        inside.addPolygon(m_perspectivePoints);
+    else
+        inside.addRect(m_cropRect);
+    QPainterPath outside;
+    outside.addRect(QRectF(documentRect(m_document)).adjusted(-5000, -5000, 5000, 5000));
+    outside = outside.subtracted(inside);
+    painter.fillPath(outside, QColor(0, 0, 0, 150));
+    QPen outline(Qt::white, 1);
+    outline.setCosmetic(true);
+    painter.setPen(outline);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(inside);
+    if (m_tool == "Perspective Crop") {
+        const QPolygonF &p = m_perspectivePoints;
+        for (int i = 1; i < 3; ++i) {
+            const qreal t = i / 3.0;
+            painter.drawLine(p[0] + (p[1] - p[0]) * t, p[3] + (p[2] - p[3]) * t);
+            painter.drawLine(p[0] + (p[3] - p[0]) * t, p[1] + (p[2] - p[1]) * t);
+        }
+        painter.setBrush(Qt::white);
+        for (const QPointF point : p)
+            painter.drawRect(QRectF(point - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)));
+        return;
+    }
+    painter.save();
+    painter.setClipRect(m_cropRect, Qt::IntersectClip);
+    QPen guide(QColor(255, 255, 255, 130), 1);
+    guide.setCosmetic(true);
+    painter.setPen(guide);
+    const QString overlay = m_cropSettings.overlay;
+    if (overlay == "Thirds" || overlay == "Golden Ratio" || overlay == "Grid") {
+        QList<qreal> positions =
+            overlay == "Golden Ratio" ? QList<qreal>{.381966, .618034} : QList<qreal>{1.0 / 3, 2.0 / 3};
+        if (overlay == "Grid") {
+            positions.clear();
+            for (int i = 1; i < 10; ++i)
+                positions.append(i / 10.0);
+        }
+        for (const qreal t : positions) {
+            const qreal x = m_cropRect.left() + m_cropRect.width() * t;
+            const qreal y = m_cropRect.top() + m_cropRect.height() * t;
+            painter.drawLine(QPointF(x, m_cropRect.top()), QPointF(x, m_cropRect.bottom()));
+            painter.drawLine(QPointF(m_cropRect.left(), y), QPointF(m_cropRect.right(), y));
+        }
+    } else if (overlay == "Diagonal") {
+        painter.drawLine(m_cropRect.topLeft(), m_cropRect.bottomRight());
+        painter.drawLine(m_cropRect.topRight(), m_cropRect.bottomLeft());
+    } else if (overlay == "Triangle") {
+        painter.drawLine(m_cropRect.topLeft(), m_cropRect.bottomRight());
+        const QPointF axis = m_cropRect.bottomRight() - m_cropRect.topLeft();
+        const qreal denominator = QPointF::dotProduct(axis, axis);
+        if (denominator > 0)
+            for (const QPointF point : {m_cropRect.topRight(), m_cropRect.bottomLeft()}) {
+                const qreal t = QPointF::dotProduct(point - m_cropRect.topLeft(), axis) / denominator;
+                painter.drawLine(point, m_cropRect.topLeft() + axis * t);
+            }
+    }
+    painter.restore();
+    painter.setPen(outline);
+    painter.setBrush(Qt::white);
+    const QList<QPointF> handles{m_cropRect.topLeft(),
+                                 m_cropRect.topRight(),
+                                 m_cropRect.bottomRight(),
+                                 m_cropRect.bottomLeft(),
+                                 {m_cropRect.center().x(), m_cropRect.top()},
+                                 {m_cropRect.right(), m_cropRect.center().y()},
+                                 {m_cropRect.center().x(), m_cropRect.bottom()},
+                                 {m_cropRect.left(), m_cropRect.center().y()}};
+    for (const QPointF handle : handles)
+        painter.drawRect(QRectF(handle - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)));
+}
+void CanvasView::rotateDocumentContent(qreal angle) {
+    if (std::abs(angle) < .001)
+        return;
+    const QPointF center(m_document->state.size.width() / 2.0, m_document->state.size.height() / 2.0);
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(angle);
+    transform.translate(-center.x(), -center.y());
+    QVector<QPointF> offsets;
+    for (const Layer &layer : m_document->state.layers)
+        offsets.append(effectiveOffset(m_document, layer));
+    for (int i = 0; i < m_document->state.layers.size(); ++i) {
+        Layer &layer = m_document->state.layers[i];
+        const QPointF originalOffset = offsets[i];
+        QPointF newOffset;
+        if (layer.kind == LayerKind::Pixel) {
+            const QImage source = m_document->layerImage(layer);
+            const QRectF bounds = transform.mapRect(QRectF(originalOffset, source.size()));
+            const QRect destination = bounds.toAlignedRect();
+            QImage rotated(destination.size(), layer.pixels.format);
+            rotated.fill(Qt::transparent);
+            QPainter painter(&rotated);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            painter.translate(-destination.topLeft());
+            painter.setTransform(transform, true);
+            painter.drawImage(originalOffset, source);
+            painter.end();
+            layer.pixels.setImage(rotated);
+            layer.parameters.remove("contentTransform");
+            newOffset = destination.topLeft();
+        } else if (layer.kind == LayerKind::SmartObject || layer.kind == LayerKind::Text ||
+                   layer.kind == LayerKind::Shape) {
+            const QImage source = m_document->layerImage(layer);
+            const QTransform local = QTransform::fromTranslate(originalOffset.x(), originalOffset.y()) *
+                                     transform *
+                                     QTransform::fromTranslate(-originalOffset.x(), -originalOffset.y());
+            const QPointF displacement = local.mapRect(QRectF(source.rect())).toAlignedRect().topLeft();
+            Layer original = layer;
+            original.parameters.remove("contentTransform");
+            const QImage raw = m_document->layerImage(original);
+            const QTransform old =
+                QImage::trueMatrix(transformFromJson(layer.parameters.value("contentTransform").toArray()),
+                                   raw.width(), raw.height());
+            layer.parameters["contentTransform"] = transformJson(old * local);
+            newOffset = originalOffset + displacement;
+        } else if (layer.kind == LayerKind::Artboard) {
+            QTransform local;
+            local.translate(originalOffset.x(), originalOffset.y());
+            layer.shape = transform.map(local.map(layer.shape));
+        } else if (layer.kind == LayerKind::GradientFill) {
+            layer.parameters["angle"] = layer.parameters.value("angle").toDouble() + angle;
+        }
+        if (!layer.mask.isNull()) {
+            const QPointF maskOffset = originalOffset + (layer.maskLinked ? QPointF() : layer.maskOffset);
+            const QRect bounds = transform.mapRect(QRectF(maskOffset, layer.mask.size())).toAlignedRect();
+            const QRect output = bounds.united(QRect(newOffset.toPoint(), layer.pixels.size));
+            const QImage mask = paintCoverage(output.size(), layer.mask.depth(), [&](QPainter &painter) {
+                painter.translate(-output.topLeft());
+                painter.setTransform(transform, true);
+                painter.drawImage(maskOffset, layer.mask);
+            });
+            layer.mask = mask;
+            layer.maskOffset = QPointF(output.topLeft()) - newOffset;
+            layer.maskLinked = false;
+        }
+        if (!layer.vectorMask.isEmpty()) {
+            QTransform local;
+            const QPointF vectorOffset =
+                originalOffset + (layer.vectorMaskLinked ? QPointF() : layer.vectorMaskOffset);
+            local.translate(vectorOffset.x(), vectorOffset.y());
+            QTransform destination;
+            destination.translate(-newOffset.x(), -newOffset.y());
+            layer.vectorMask = destination.map(transform.map(local.map(layer.vectorMask)));
+            layer.vectorMaskOffset = {};
+        }
+        layer.offset = newOffset;
+    }
+    if (!m_document->state.selection.isNull()) {
+        const QImage selection =
+            paintCoverage(m_document->state.size, m_document->state.bitDepth, [&](QPainter &painter) {
+                painter.setTransform(transform);
+                painter.drawImage(QPoint(), m_document->state.selection);
+            });
+        m_document->state.selection = selection;
+    }
+    m_document->state.guides.clear();
+    m_document->touch();
+}
+bool CanvasView::commitCrop() {
+    if (m_tool == "Perspective Crop" && m_perspectivePoints.size() == 4) {
+        perspectiveCrop();
+        cancelCrop();
+        return true;
+    }
+    if (!m_cropActive || m_cropRect.width() < 1 || m_cropRect.height() < 1)
+        return false;
+    const QRect crop(qRound(m_cropRect.left()), qRound(m_cropRect.top()),
+                     std::max(1, qRound(m_cropRect.width())), std::max(1, qRound(m_cropRect.height())));
+    const CropSettings settings = m_cropSettings;
+    m_document->mutate("Crop", [&] {
+        rotateDocumentContent(settings.angle);
+        m_document->crop(crop, settings.deleteCroppedPixels);
+        if (!settings.outputSize.isEmpty() && settings.outputSize != m_document->state.size)
+            m_document->resizeImage(settings.outputSize);
+        if (settings.resolution > 0)
+            m_document->state.resolution = settings.resolution;
+    });
+    cancelCrop();
+    fitToView();
+    return true;
+}
 QTransform CanvasView::viewTransform() const {
     QTransform transform;
     const qreal ruler = m_rulers ? 20 : 0;
@@ -278,6 +728,20 @@ void CanvasView::fitToView() {
                    qreal(0.005), qreal(64));
     m_fitPending = false;
     emit zoomChanged(m_zoom);
+    update();
+}
+void CanvasView::fitSelection() {
+    const QRect bounds = m_document->selectionBounds();
+    if (bounds.isEmpty()) {
+        fitToView();
+        return;
+    }
+    m_pan = {};
+    m_rotation = 0;
+    const qreal ruler = m_rulers ? 20 : 0;
+    setZoom(std::min((width() - ruler - 64) / bounds.width(), (height() - ruler - 64) / bounds.height()));
+    m_pan =
+        QPointF((width() + ruler) / 2.0, (height() + ruler) / 2.0) - fromDocument(QRectF(bounds).center());
     update();
 }
 void CanvasView::resetView() {
@@ -361,6 +825,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
     painter.setClipRect(viewport);
     painter.setTransform(viewTransform());
     const QRect imageRect = documentRect(m_document);
+    const bool extras = !property("showExtras").isValid() || property("showExtras").toBool();
     for (int i = 8; i > 0; --i) {
         QPen shadow(QColor(0, 0, 0, 8), i * 2 / m_zoom);
         painter.setPen(shadow);
@@ -376,12 +841,41 @@ void CanvasView::paintEvent(QPaintEvent *) {
     }
     painter.fillRect(imageRect, QBrush(checker));
     painter.setRenderHint(QPainter::SmoothPixmapTransform, m_zoom < 1);
-    painter.drawImage(QPoint(0, 0), m_document->composite());
+    painter.save();
+    if (m_cropActive && std::abs(m_cropSettings.angle) > .001) {
+        const QPointF center = QRectF(imageRect).center();
+        painter.translate(center);
+        painter.rotate(m_cropSettings.angle);
+        painter.translate(-center);
+    }
+    if (m_layerMaskPreview == MaskPreview::Grayscale)
+        painter.drawImage(QPoint(), activeMaskPreview());
+    else
+        painter.drawImage(QPoint(0, 0), m_transformActive ? m_transformPreview : m_document->composite());
+    if (m_layerMaskPreview == MaskPreview::Overlay) {
+        const QImage mask = activeMaskPreview();
+        if (m_layerMaskOverlayCache.isNull()) {
+            m_layerMaskOverlayCache = QImage(mask.size(), QImage::Format_ARGB32);
+            for (int y = 0; y < mask.height(); ++y) {
+                auto *row = reinterpret_cast<QRgb *>(m_layerMaskOverlayCache.scanLine(y));
+                for (int x = 0; x < mask.width(); ++x)
+                    row[x] = qRgba(230, 45, 55, qRound((1 - maskSample(mask, x, y)) * 128));
+            }
+        }
+        painter.drawImage(QPoint(), m_layerMaskOverlayCache);
+    }
+    painter.restore();
+    if (m_transporting && !m_transportPreview.isNull()) {
+        painter.save();
+        painter.setOpacity(.85);
+        painter.drawImage(m_transportDelta, m_transportPreview);
+        painter.restore();
+    }
     if (m_quickMask && !m_maskOverlay.isNull())
         painter.drawImage(QPoint(), m_maskOverlay);
     painter.save();
     painter.setClipRect(imageRect);
-    if (m_grid && m_zoom >= 0.1) {
+    if (m_grid && extras && m_zoom >= 0.1) {
         const int spacing = std::max(1, m_document->state.metadata.value("gridSpacing").toInt(64));
         QPen grid(QColor(150, 150, 150, 95), 1 / m_zoom, Qt::DotLine);
         painter.setPen(grid);
@@ -390,7 +884,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
         for (int y = 0; y < imageRect.height(); y += spacing)
             painter.drawLine(0, y, imageRect.width(), y);
     }
-    if (m_guides) {
+    if (m_guides && extras) {
         painter.setPen(QPen(QColor("#58d1d8"), 1 / m_zoom));
         for (const Guide &guide : m_document->state.guides) {
             if (guide.vertical)
@@ -407,7 +901,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
             painter.drawLine(QPointF(0, m_guidePosition), QPointF(imageRect.width(), m_guidePosition));
     }
     painter.restore();
-    if (!m_quickMask && !m_selectionOutline.isEmpty()) {
+    if (!m_quickMask && extras && !m_selectionOutline.isEmpty()) {
         painter.setRenderHint(QPainter::Antialiasing, false);
         QPen white(Qt::white, 1);
         white.setCosmetic(true);
@@ -420,14 +914,14 @@ void CanvasView::paintEvent(QPaintEvent *) {
         painter.setPen(ants);
         painter.drawPath(m_selectionOutline);
     }
-    if (m_dragging && (selectionTool(m_tool) || shapeTool(m_tool) ||
-                       named(m_tool, {"Crop", "Perspective Crop", "Slice", "Slice Select", "Gradient"}))) {
+    if (m_dragging && (selectionTool(m_tool) || shapeTool(m_tool) || m_transportSelecting ||
+                       named(m_tool, {"Slice", "Slice Select", "Gradient"}))) {
         QPen preview(Qt::white, 1);
         preview.setCosmetic(true);
         preview.setStyle(Qt::DashLine);
         painter.setPen(preview);
         painter.setBrush(Qt::NoBrush);
-        if (named(m_tool, {"Lasso", "Polygonal Lasso", "Magnetic Lasso"})) {
+        if (named(m_tool, {"Lasso", "Polygonal Lasso", "Magnetic Lasso"}) || m_transportSelecting) {
             painter.drawPolyline(m_lasso);
             if (!m_lasso.isEmpty())
                 painter.drawLine(m_lasso.last(), toDocument(m_cursor));
@@ -439,17 +933,8 @@ void CanvasView::paintEvent(QPaintEvent *) {
             painter.drawPath(polygonShape(m_dragRect, m_tool == "Triangle" ? 3 : 6));
         else
             painter.drawRect(m_dragRect);
-        if (named(m_tool, {"Crop", "Perspective Crop"})) {
-            painter.setPen(QPen(QColor(255, 255, 255, 95), 1 / m_zoom));
-            for (int i = 1; i <= 2; ++i) {
-                const qreal x = m_dragRect.left() + m_dragRect.width() * i / 3;
-                const qreal y = m_dragRect.top() + m_dragRect.height() * i / 3;
-                painter.drawLine(QPointF(x, m_dragRect.top()), QPointF(x, m_dragRect.bottom()));
-                painter.drawLine(QPointF(m_dragRect.left(), y), QPointF(m_dragRect.right(), y));
-            }
-        }
     }
-    if (!m_penPath.isEmpty()) {
+    if (!m_penPath.isEmpty() && extras) {
         QPen pen(QColor("#e8893a"), 1);
         pen.setCosmetic(true);
         painter.setPen(pen);
@@ -461,7 +946,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
                              QColor("#e8893a"));
         }
     }
-    if (m_tool == "Direct Selection") {
+    if (m_tool == "Direct Selection" && extras) {
         const Layer *layer = m_document->activeLayer();
         if (layer && layer->kind == LayerKind::Shape) {
             painter.save();
@@ -480,7 +965,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
             painter.restore();
         }
     }
-    if (property("showTransformControls").toBool()) {
+    if (property("showTransformControls").toBool() && !m_transformActive) {
         const QRectF bounds = activeLayerBounds();
         if (!bounds.isEmpty()) {
             QPen outline(QColor("#dddddd"), 1);
@@ -502,7 +987,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
                     QRectF(handle - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)));
         }
     }
-    if (!m_perspectivePoints.isEmpty()) {
+    if (!m_perspectivePoints.isEmpty() && m_perspectivePoints.size() < 4) {
         QPen outline(QColor("#e8893a"), 1);
         outline.setCosmetic(true);
         painter.setPen(outline);
@@ -512,6 +997,14 @@ void CanvasView::paintEvent(QPaintEvent *) {
         for (const QPointF point : m_perspectivePoints)
             painter.fillRect(QRectF(point - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)),
                              QColor("#e8893a"));
+    }
+    drawCropPreview(painter);
+    drawTransformPreview(painter);
+    if (m_straightening) {
+        QPen straighten(QColor("#58d1d8"), 1);
+        straighten.setCosmetic(true);
+        painter.setPen(straighten);
+        painter.drawLine(m_start, toDocument(m_cursor));
     }
     if (paintTool(m_tool) && underMouse() && !m_panning) {
         const QPointF cursor = toDocument(m_cursor);
@@ -529,9 +1022,16 @@ void CanvasView::paintEvent(QPaintEvent *) {
     }
     painter.resetTransform();
     painter.setClipping(false);
-    if (m_tool == "Perspective Crop") {
+    if (m_tool == "Perspective Crop" || m_cropActive || m_transformActive) {
         painter.setPen(QColor("#e8e8e8"));
-        painter.drawText(QPointF(32, height() - 16), tr("Click four corners clockwise. Esc cancels."));
+        painter.drawText(
+            QPointF(32, height() - 16),
+            m_transformActive ? tr("Free Transform: drag handles; outside rotates; Alt scales from center; "
+                                   "Shift toggles aspect. Enter applies; Esc cancels.")
+            : m_tool == "Perspective Crop" && m_perspectivePoints.size() < 4
+                ? tr("Click four corners clockwise. Enter applies; Esc cancels.")
+            : m_straightenArmed ? tr("Drag along a horizon or vertical line. Enter applies; Esc cancels.")
+                                : tr("Drag handles to crop. Enter applies; Esc cancels. O cycles overlays."));
     }
     if (m_rulers) {
         painter.fillRect(0, 0, width(), 20, QColor("#363636"));
@@ -607,23 +1107,22 @@ void CanvasView::applyImage(const QImage &input, QPoint documentOrigin, bool era
         return;
     const bool selectionActive = m_selectionActive;
     if (m_quickMask) {
-        QImage mask = m_document->state.selection.convertToFormat(QImage::Format_Grayscale8);
-        if (mask.isNull()) {
-            mask = QImage(m_document->state.size, QImage::Format_Grayscale8);
-            mask.fill(255);
-        }
+        QImage mask = normalizeMask(m_document->state.selection);
+        if (mask.isNull())
+            mask = makeMask(m_document->state.size, m_document->state.bitDepth, 1);
         for (int y = 0; y < image.height(); ++y) {
             const int sy = y + documentOrigin.y();
             if (sy < 0 || sy >= mask.height())
                 continue;
-            auto *row = mask.scanLine(sy);
             for (int x = 0; x < image.width(); ++x) {
                 const int sx = x + documentOrigin.x();
                 if (sx < 0 || sx >= mask.width())
                     continue;
-                const QRgb pixel = image.pixel(x, y);
-                const int alpha = qAlpha(pixel);
-                row[sx] = quint8((row[sx] * (255 - alpha) + (erase ? 255 : qGray(pixel)) * alpha) / 255);
+                const QColor pixel = image.pixelColor(x, y);
+                const qreal alpha = pixel.alphaF();
+                const qreal gray = (pixel.redF() * 11 + pixel.greenF() * 16 + pixel.blueF() * 5) / 32;
+                setMaskSample(mask, sx, sy,
+                              maskSample(mask, sx, sy) * (1 - alpha) + (erase ? 1 : gray) * alpha);
             }
         }
         m_document->state.selection = mask;
@@ -637,30 +1136,32 @@ void CanvasView::applyImage(const QImage &input, QPoint documentOrigin, bool era
                 const int sx = x + documentOrigin.x(), sy = y + documentOrigin.y();
                 if (image.depth() > 32) {
                     QColor pixel = image.pixelColor(x, y);
-                    pixel.setAlphaF(pixel.alphaF() * selectionAt(m_document, sx, sy) / 255.0);
+                    pixel.setAlphaF(pixel.alphaF() * maskSample(m_document->state.selection, sx, sy));
                     image.setPixelColor(x, y, pixel);
                 } else {
-                    const int a = qAlpha(row[x]) * selectionAt(m_document, sx, sy) / 255;
+                    const int a = qRound(qAlpha(row[x]) * maskSample(m_document->state.selection, sx, sy));
                     row[x] = qRgba(qRed(row[x]), qGreen(row[x]), qBlue(row[x]), a);
                 }
             }
         }
     QPoint localOrigin = documentOrigin - effectiveOffset(m_document, *layer).toPoint();
     if (layer->maskTarget && !layer->mask.isNull()) {
-        QImage mask = layer->mask.convertToFormat(QImage::Format_Grayscale8);
+        if (!layer->maskLinked)
+            localOrigin -= layer->maskOffset.toPoint();
+        QImage mask = normalizeMask(layer->mask);
         for (int y = 0; y < image.height(); ++y) {
             const int ly = y + localOrigin.y();
             if (ly < 0 || ly >= mask.height())
                 continue;
-            auto *row = mask.scanLine(ly);
             for (int x = 0; x < image.width(); ++x) {
                 const int lx = x + localOrigin.x();
                 if (lx < 0 || lx >= mask.width())
                     continue;
-                const QRgb pixel = image.pixel(x, y);
-                const int alpha = qAlpha(pixel);
-                const int value = erase ? 0 : qGray(pixel);
-                row[lx] = quint8((row[lx] * (255 - alpha) + value * alpha) / 255);
+                const QColor pixel = image.pixelColor(x, y);
+                const qreal alpha = pixel.alphaF();
+                const qreal value =
+                    erase ? 1 : (pixel.redF() * 11 + pixel.greenF() * 16 + pixel.blueF() * 5) / 32;
+                setMaskSample(mask, lx, ly, maskSample(mask, lx, ly) * (1 - alpha) + value * alpha);
             }
         }
         layer->mask = mask;
@@ -699,10 +1200,68 @@ void CanvasView::applyImage(const QImage &input, QPoint documentOrigin, bool era
         }
         const QRect bounds =
             QRect(localOrigin, image.size()).intersected(QRect(QPoint(), layer->pixels.size));
+        if (m_dragging && named(m_tool, {"History Brush", "Art History Brush"}) &&
+            !m_historySource.isNull()) {
+            QImage restored = layer->pixels.region(QRect(localOrigin, image.size()));
+            const QImage source =
+                m_historySource.convertToFormat(restored.format()).copy(QRect(localOrigin, image.size()));
+            for (int y = 0; y < restored.height(); ++y)
+                for (int x = 0; x < restored.width(); ++x) {
+                    const qreal amount = image.pixelColor(x, y).alphaF();
+                    if (amount <= 0)
+                        continue;
+                    if (restored.format() == QImage::Format_RGBA32FPx4) {
+                        float *target = reinterpret_cast<float *>(restored.scanLine(y)) + x * 4;
+                        const float *sample =
+                            reinterpret_cast<const float *>(source.constScanLine(y)) + x * 4;
+                        for (int channel = 0; channel < (layer->lockAlpha ? 3 : 4); ++channel)
+                            target[channel] =
+                                float(target[channel] * (1 - amount) + sample[channel] * amount);
+                    } else if (restored.format() == QImage::Format_RGBA64) {
+                        auto *target = reinterpret_cast<QRgba64 *>(restored.scanLine(y)) + x;
+                        const auto sample = reinterpret_cast<const QRgba64 *>(source.constScanLine(y))[x];
+                        *target = QRgba64::fromRgba64(
+                            qRound(target->red() * (1 - amount) + sample.red() * amount),
+                            qRound(target->green() * (1 - amount) + sample.green() * amount),
+                            qRound(target->blue() * (1 - amount) + sample.blue() * amount),
+                            layer->lockAlpha
+                                ? target->alpha()
+                                : qRound(target->alpha() * (1 - amount) + sample.alpha() * amount));
+                    } else {
+                        uchar *target = restored.scanLine(y) + x * 4;
+                        const uchar *sample = source.constScanLine(y) + x * 4;
+                        for (int channel = 0; channel < (layer->lockAlpha ? 3 : 4); ++channel)
+                            target[channel] =
+                                uchar(qRound(target[channel] * (1 - amount) + sample[channel] * amount));
+                    }
+                }
+            layer->pixels.paint(bounds, [&](QPainter &painter) {
+                painter.setCompositionMode(QPainter::CompositionMode_Source);
+                painter.drawImage(localOrigin, restored);
+            });
+            m_document->touch();
+            return;
+        }
+        const QString brushMode =
+            paintTool(m_tool) && m_dragging ? property("brushBlendMode").toString() : QString();
+        const bool clearBrush = brushMode == "Clear";
+        const bool behindBrush = brushMode == "Behind";
+        if (layer->lockAlpha && (clearBrush || behindBrush))
+            return;
+        if (!erase && !brushMode.isEmpty() && brushMode != "Normal" && !clearBrush && !behindBrush) {
+            const QImage backdrop = layer->pixels.region(QRect(localOrigin, image.size()));
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor destination = backdrop.pixelColor(x, y), source = image.pixelColor(x, y);
+                    if (destination.alphaF() > 0 && source.alphaF() > 0)
+                        image.setPixelColor(x, y, blendColor(destination, source, brushMode));
+                }
+        }
         layer->pixels.paint(bounds, [&](QPainter &painter) {
-            painter.setCompositionMode(erase ? QPainter::CompositionMode_DestinationOut
-                                             : (layer->lockAlpha ? QPainter::CompositionMode_SourceAtop
-                                                                 : QPainter::CompositionMode_SourceOver));
+            painter.setCompositionMode(erase || clearBrush ? QPainter::CompositionMode_DestinationOut
+                                       : behindBrush       ? QPainter::CompositionMode_DestinationOver
+                                       : layer->lockAlpha  ? QPainter::CompositionMode_SourceAtop
+                                                           : QPainter::CompositionMode_SourceOver);
             painter.drawImage(localOrigin, image);
         });
     }
@@ -710,6 +1269,8 @@ void CanvasView::applyImage(const QImage &input, QPoint documentOrigin, bool era
 }
 
 void CanvasView::dab(QPointF point) {
+    if (m_opacity <= 0 || m_flow <= 0)
+        return;
     if (!documentRect(m_document).contains(point.toPoint()))
         return;
     if (m_tool == "Quick Selection") {
@@ -820,6 +1381,7 @@ void CanvasView::dab(QPointF point) {
                 const QPoint p = origin + QPoint(x, y) - effectiveOffset(m_document, *layer).toPoint();
                 if (m_historySource.rect().contains(p))
                     color = m_historySource.pixelColor(p);
+                color.setAlphaF(1);
             }
             if (m_tool == "Healing Brush") {
                 color.setRed(std::clamp(color.red() + healingDifference.x(), 0, 255));
@@ -893,18 +1455,16 @@ void CanvasView::dab(QPointF point) {
             const quint64 key = TileImage::key(docX / 256, docY / 256);
             auto coverage = m_strokeCoverage.find(key);
             if (coverage == m_strokeCoverage.end()) {
-                QImage tile(256, 256, QImage::Format_Grayscale8);
-                tile.fill(0);
+                const QImage tile = makeMask({256, 256}, m_document->state.bitDepth);
                 coverage = m_strokeCoverage.insert(key, tile);
             }
-            uchar &covered = coverage.value().scanLine(docY % 256)[docX % 256];
-            const qreal before = covered / 255.0;
+            const qreal before = maskSample(coverage.value(), docX % 256, docY % 256);
             const qreal cap = std::min(qreal(1), m_opacity * pressure);
             const qreal after = std::max(before, before + (cap - before) * edge * m_flow * pressure);
             const qreal increment = before < 1 ? (after - before) / (1 - before) : 0;
             // Opacity caps a complete gesture; flow controls accumulation between dabs.
             alpha = std::min(alpha, increment);
-            covered = quint8(std::clamp(qRound(after * 255), 0, 255));
+            setMaskSample(coverage.value(), docX % 256, docY % 256, after);
             color.setAlphaF(std::clamp(color.alphaF() * alpha, qreal(0), qreal(1)));
             if (image.depth() > 32)
                 image.setPixelColor(x, y, color);
@@ -926,6 +1486,9 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
     setFocus();
     m_cursor = event->position();
     const QPointF point = toDocument(event->position());
+    const bool temporaryMove = property("externalShortcuts").toBool()
+                                   ? property("temporaryMove").toBool()
+                                   : event->modifiers().testFlag(Qt::ControlModifier);
     if (event->button() == Qt::RightButton && event->modifiers().testFlag(Qt::AltModifier)) {
         m_hudBrush = true;
         m_start = event->position();
@@ -943,6 +1506,43 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
     }
     if (event->button() != Qt::LeftButton)
         return;
+    if (m_transformActive) {
+        m_transformHandle = transformHandleAt(point);
+        if (m_transformMode == "Rotate" && m_transformHandle != 9)
+            m_transformHandle = 10;
+        m_initialTransformQuad = m_transformQuad;
+        m_initialTransformPivot = m_transformPivot;
+        m_start = point;
+        m_last = point;
+        m_dragging = true;
+        update();
+        return;
+    }
+    if (m_tool == "Crop") {
+        m_start = point;
+        m_last = point;
+        m_initialCropRect = m_cropRect;
+        m_initialCropAngle = m_cropSettings.angle;
+        if (m_straightenArmed) {
+            m_straightening = true;
+            m_dragging = true;
+            return;
+        }
+        m_cropHandle = cropHandleAt(point);
+        if (m_cropHandle == 9) {
+            m_cropRotating = true;
+            m_dragging = true;
+        } else {
+            if (m_cropHandle == -1) {
+                m_cropHandle = 10;
+                m_cropRect = QRectF(point, QSizeF(1, 1));
+                m_cropActive = true;
+            }
+            m_dragging = true;
+        }
+        update();
+        return;
+    }
     if (m_rulers && (event->position().x() < 20 || event->position().y() < 20)) {
         m_guideDrag = event->position().x() < 20 ? 1 : 2;
         m_guidePosition = m_guideDrag == 1 ? point.x() : point.y();
@@ -1053,9 +1653,50 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
     }
     chooseSelectionOperation(event->modifiers());
     if (m_tool == "Perspective Crop") {
-        m_perspectivePoints.append(point);
-        if (m_perspectivePoints.size() == 4)
-            perspectiveCrop();
+        if (m_perspectivePoints.size() < 4) {
+            m_perspectivePoints.append(point);
+            emit cropPreviewChanged(m_perspectivePoints.size() == 4);
+        } else {
+            m_perspectiveHandle = -1;
+            for (int i = 0; i < 4; ++i)
+                if (QLineF(point, m_perspectivePoints[i]).length() < 10 / m_zoom)
+                    m_perspectiveHandle = i;
+            if (m_perspectiveHandle < 0 && m_perspectivePoints.containsPoint(point, Qt::OddEvenFill))
+                m_perspectiveHandle = 4;
+            if (m_perspectiveHandle >= 0) {
+                m_dragging = true;
+                m_start = point;
+                m_last = point;
+            }
+        }
+        update();
+        return;
+    }
+    if (transportTool(m_tool) && !temporaryMove) {
+        Layer *layer = m_document->activeLayer();
+        if (!layer || layer->locked || layer->maskTarget)
+            return;
+        m_dragging = true;
+        m_start = point;
+        m_last = point;
+        m_transportDelta = {};
+        if (m_document->hasSelection() && selectionAt(m_document, qRound(point.x()), qRound(point.y())) > 0) {
+            m_transporting = true;
+            m_transportMask = m_document->state.selection;
+            m_originalPixels = layer->pixels;
+            m_strokeSource = m_document->layerImage(*layer);
+            m_initialOffset = effectiveOffset(m_document, *layer);
+            m_transportPreview = m_document->composite();
+            for (int y = 0; y < m_transportPreview.height(); ++y)
+                for (int x = 0; x < m_transportPreview.width(); ++x) {
+                    QColor color = m_transportPreview.pixelColor(x, y);
+                    color.setAlphaF(color.alphaF() * maskSample(m_transportMask, x, y));
+                    m_transportPreview.setPixelColor(x, y, color);
+                }
+        } else {
+            m_transportSelecting = true;
+            m_lasso = {point};
+        }
         update();
         return;
     }
@@ -1112,9 +1753,9 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
     m_lasso.append(point);
     if (m_tool == "Ruler")
         return;
-    if (named(m_tool, {"Move", "Path Selection", "Direct Selection"}) ||
-        event->modifiers().testFlag(Qt::ControlModifier)) {
-        if (m_tool == "Move" && (!property("autoSelect").isValid() || property("autoSelect").toBool())) {
+    if (named(m_tool, {"Move", "Path Selection", "Direct Selection"}) || temporaryMove) {
+        if ((m_tool == "Move" || temporaryMove) &&
+            (!property("autoSelect").isValid() || property("autoSelect").toBool())) {
             for (int i = int(m_document->state.layers.size()) - 1; i >= 0; --i) {
                 const Layer &candidate = m_document->state.layers[i];
                 if (!candidate.visible || candidate.opacity <= 0 || candidate.kind == LayerKind::Group ||
@@ -1148,8 +1789,19 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
                 }
                 if (color.alpha() < 5)
                     continue;
-                if (candidate.maskEnabled && !candidate.mask.isNull() &&
-                    (!candidate.mask.rect().contains(local) || qGray(candidate.mask.pixel(local)) < 5))
+                if (candidate.maskEnabled && !candidate.mask.isNull()) {
+                    const QPoint maskPoint =
+                        local - (candidate.maskLinked ? QPoint() : candidate.maskOffset.toPoint());
+                    if (1 - candidate.maskDensity *
+                                (1 - maskSample(candidate.mask, maskPoint.x(), maskPoint.y())) <
+                        .02)
+                        continue;
+                }
+                if (candidate.vectorMaskEnabled && !candidate.vectorMask.isEmpty() &&
+                    candidate.vectorMaskDensity > .98 &&
+                    !candidate.vectorMask.contains(QPointF(local) - (candidate.vectorMaskLinked
+                                                                         ? QPointF()
+                                                                         : candidate.vectorMaskOffset)))
                     continue;
                 m_document->setActiveIndex(i);
                 break;
@@ -1162,6 +1814,25 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
         }
         m_moving = true;
         m_initialOffset = layer->offset;
+        m_initialMaskOffsets.clear();
+        m_initialVectorMaskOffsets.clear();
+        QSet<quint64> moving{layer->id};
+        bool found = true;
+        while (found) {
+            found = false;
+            for (const Layer &candidate : m_document->state.layers)
+                if (moving.contains(candidate.parentId) && !moving.contains(candidate.id)) {
+                    moving.insert(candidate.id);
+                    found = true;
+                }
+        }
+        for (const Layer &candidate : m_document->state.layers)
+            if (moving.contains(candidate.id)) {
+                if (!candidate.maskLinked)
+                    m_initialMaskOffsets.insert(candidate.id, candidate.maskOffset);
+                if (!candidate.vectorMaskLinked)
+                    m_initialVectorMaskOffsets.insert(candidate.id, candidate.vectorMaskOffset);
+            }
         m_document->beginTransaction("Move layer");
         return;
     }
@@ -1173,12 +1844,22 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
         }
         m_document->beginTransaction(m_tool);
         m_originalPixels = layer->pixels;
-        if (named(m_tool, {"History Brush", "Art History Brush"}) && m_historySource.isNull() &&
-            !layer->pixels.empty())
-            m_historySource = layer->pixels.image();
+        if (named(m_tool, {"History Brush", "Art History Brush"})) {
+            const int sourceIndex =
+                property("historySourceIndex").isValid() ? property("historySourceIndex").toInt() : -1;
+            m_historySource = m_document->historyLayerImage(layer->id, sourceIndex);
+            if (m_historySource.isNull()) {
+                m_document->cancelTransaction();
+                m_dragging = false;
+                return;
+            }
+        }
         m_healMask = {};
         m_strokeCoverage.clear();
-        dab(point);
+        if (event->modifiers().testFlag(Qt::ShiftModifier) && m_hasLastStrokePoint)
+            drawStroke(m_lastStrokePoint, point);
+        else
+            dab(point);
     }
     update();
 }
@@ -1213,6 +1894,57 @@ void CanvasView::mouseMoveEvent(QMouseEvent *event) {
         update();
         return;
     }
+    if (m_transformActive && m_dragging && m_transformHandle >= 0) {
+        updateTransformDrag(point, event->modifiers());
+        return;
+    }
+    if (m_straightening) {
+        update();
+        return;
+    }
+    if (m_cropRotating) {
+        const QPointF center = QRectF(documentRect(m_document)).center();
+        const qreal first = std::atan2(m_start.y() - center.y(), m_start.x() - center.x());
+        const qreal current = std::atan2(point.y() - center.y(), point.x() - center.x());
+        m_cropSettings.angle =
+            m_initialCropAngle + std::remainder((current - first) * 180 / std::numbers::pi, 360.0);
+        if (event->modifiers().testFlag(Qt::ShiftModifier))
+            m_cropSettings.angle = qRound(m_cropSettings.angle / 15) * 15;
+        emit cropSettingsChanged();
+        update();
+        return;
+    }
+    if (m_dragging && m_cropHandle >= 0) {
+        updateCropDrag(point, event->modifiers());
+        return;
+    }
+    if (m_dragging && m_perspectiveHandle >= 0) {
+        if (m_perspectiveHandle < 4)
+            m_perspectivePoints[m_perspectiveHandle] = point;
+        else
+            m_perspectivePoints.translate(point - m_last);
+        m_last = point;
+        update();
+        return;
+    }
+    if (m_transporting) {
+        m_transportDelta = point - m_start;
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            if (std::abs(m_transportDelta.x()) >= std::abs(m_transportDelta.y()))
+                m_transportDelta.setY(0);
+            else
+                m_transportDelta.setX(0);
+        }
+        update();
+        return;
+    }
+    if (m_transportSelecting) {
+        if (QLineF(m_lasso.last(), point).length() > 1 / m_zoom)
+            m_lasso.append(point);
+        m_dragRect = QRectF(m_start, point).normalized();
+        update();
+        return;
+    }
     if (!m_dragging) {
         update();
         return;
@@ -1244,10 +1976,22 @@ void CanvasView::mouseMoveEvent(QMouseEvent *event) {
                     delta.setX(0);
             }
             layer->offset = m_initialOffset + delta;
+            for (Layer &candidate : m_document->state.layers) {
+                if (m_initialMaskOffsets.contains(candidate.id))
+                    candidate.maskOffset = m_initialMaskOffsets[candidate.id] - delta;
+                if (m_initialVectorMaskOffsets.contains(candidate.id))
+                    candidate.vectorMaskOffset = m_initialVectorMaskOffsets[candidate.id] - delta;
+            }
             m_document->touch();
         }
     } else if (paintTool(m_tool)) {
-        const QPointF smoothed = m_last + (point - m_last) * (1 - m_smoothing * 0.85);
+        QPointF target = point;
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            const QPointF delta = point - m_start;
+            target = std::abs(delta.x()) >= std::abs(delta.y()) ? QPointF(point.x(), m_start.y())
+                                                                : QPointF(m_start.x(), point.y());
+        }
+        const QPointF smoothed = m_last + (target - m_last) * (1 - m_smoothing * 0.85);
         drawStroke(m_last, smoothed);
         m_last = smoothed;
         update();
@@ -1292,21 +2036,122 @@ void CanvasView::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void CanvasView::finishSelection() {
-    QImage mask(m_document->state.size, QImage::Format_Grayscale8);
-    mask.fill(0);
-    QPainter painter(&mask);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(Qt::white);
-    if (named(m_tool, {"Lasso", "Polygonal Lasso", "Magnetic Lasso"}))
-        painter.drawPolygon(m_lasso);
-    else if (m_tool == "Elliptical Marquee")
-        painter.drawEllipse(m_dragRect);
-    else
-        painter.drawRect(m_dragRect);
-    painter.end();
+    const QImage mask =
+        paintCoverage(m_document->state.size, m_document->state.bitDepth, [&](QPainter &painter) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(Qt::white);
+            if (named(m_tool, {"Lasso", "Polygonal Lasso", "Magnetic Lasso"}))
+                painter.drawPolygon(m_lasso);
+            else if (m_tool == "Elliptical Marquee")
+                painter.drawEllipse(m_dragRect);
+            else
+                painter.drawRect(m_dragRect);
+        });
     m_document->setSelection(mask, m_selectionOperation);
     m_lasso.clear();
+}
+void CanvasView::finishTransport() {
+    const QPoint delta = m_transportDelta.toPoint();
+    if (delta.isNull() || m_strokeSource.isNull() || m_transportMask.isNull())
+        return;
+    Layer *active = m_document->activeLayer();
+    if (!active || active->locked)
+        return;
+    const bool contentMove = m_tool == "Content-Aware Move";
+    const QPoint offset = m_initialOffset.toPoint();
+    const QImage localMask =
+        paintCoverage(m_strokeSource.size(), m_document->state.bitDepth,
+                      [&](QPainter &painter) { painter.drawImage(-offset, m_transportMask); });
+    const QImage original = m_strokeSource;
+    QImage repaired = contentMove ? synthesizePatches(original, localMask) : original;
+    QImage cutout(original.size(), original.format());
+    cutout.fill(Qt::transparent);
+    qreal donorRed = 0, donorGreen = 0, donorBlue = 0, targetRed = 0, targetGreen = 0, targetBlue = 0,
+          weight = 0;
+    if (!contentMove)
+        for (int y = 0; y < original.height(); ++y)
+            for (int x = 0; x < original.width(); ++x) {
+                const qreal coverage = maskSample(localMask, x, y);
+                const QPoint donor = QPoint(x, y) + delta;
+                if (coverage <= 0 || !original.rect().contains(donor))
+                    continue;
+                const QColor source = original.pixelColor(donor), target = original.pixelColor(x, y);
+                donorRed += source.redF() * coverage;
+                donorGreen += source.greenF() * coverage;
+                donorBlue += source.blueF() * coverage;
+                targetRed += target.redF() * coverage;
+                targetGreen += target.greenF() * coverage;
+                targetBlue += target.blueF() * coverage;
+                weight += coverage;
+            }
+    const qreal adaptation = std::clamp(
+        property("patchColorAdaptation").isValid() ? property("patchColorAdaptation").toDouble() : .7, 0.,
+        1.);
+    auto mix = [](QColor a, QColor b, qreal amount) {
+        return QColor::fromRgbF(
+            a.redF() * (1 - amount) + b.redF() * amount, a.greenF() * (1 - amount) + b.greenF() * amount,
+            a.blueF() * (1 - amount) + b.blueF() * amount, a.alphaF() * (1 - amount) + b.alphaF() * amount);
+    };
+    for (int y = 0; y < original.height(); ++y)
+        for (int x = 0; x < original.width(); ++x) {
+            const qreal coverage = maskSample(localMask, x, y);
+            if (coverage <= 0)
+                continue;
+            const QColor target = original.pixelColor(x, y);
+            if (contentMove) {
+                repaired.setPixelColor(x, y, mix(target, repaired.pixelColor(x, y), coverage));
+                QColor moving = target;
+                moving.setAlphaF(moving.alphaF() * coverage);
+                cutout.setPixelColor(x, y, moving);
+            } else {
+                const QPoint donor = QPoint(x, y) + delta;
+                if (!original.rect().contains(donor))
+                    continue;
+                QColor color = original.pixelColor(donor);
+                if (weight > 0) {
+                    color.setRedF(
+                        std::clamp(color.redF() + (targetRed - donorRed) / weight * adaptation, 0., 1.));
+                    color.setGreenF(std::clamp(
+                        color.greenF() + (targetGreen - donorGreen) / weight * adaptation, 0., 1.));
+                    color.setBlueF(
+                        std::clamp(color.blueF() + (targetBlue - donorBlue) / weight * adaptation, 0., 1.));
+                }
+                repaired.setPixelColor(x, y, mix(target, color, coverage));
+            }
+        }
+    m_document->mutate(contentMove ? "Content-Aware Move" : "Patch", [&] {
+        Layer *layer = m_document->activeLayer();
+        if (contentMove) {
+            const QRect destination =
+                m_document->selectionBounds().translated(delta).intersected(documentRect(m_document));
+            const QRect extent = original.rect().united(destination.translated(-offset));
+            QImage result(extent.size(), original.format());
+            result.fill(Qt::transparent);
+            QPainter painter(&result);
+            painter.drawImage(-extent.topLeft(), repaired);
+            painter.drawImage(delta - extent.topLeft(), cutout);
+            painter.end();
+            layer->pixels.setImage(result);
+            layer->offset += extent.topLeft();
+            if (!extent.topLeft().isNull()) {
+                if (!layer->mask.isNull()) {
+                    layer->maskOffset -= extent.topLeft();
+                    layer->maskLinked = false;
+                }
+                QTransform translation;
+                translation.translate(-extent.left(), -extent.top());
+                layer->vectorMask = translation.map(layer->vectorMask);
+            }
+            const QImage movedMask = paintCoverage(
+                m_document->state.size, m_document->state.bitDepth,
+                [&](QPainter &selectionPainter) { selectionPainter.drawImage(delta, m_transportMask); });
+            m_document->setSelection(movedMask);
+        } else
+            layer->pixels.setImage(repaired);
+        if (layer->kind != LayerKind::SmartObject)
+            layer->kind = LayerKind::Pixel;
+        m_document->touch();
+    });
 }
 
 void CanvasView::mouseReleaseEvent(QMouseEvent *event) {
@@ -1330,6 +2175,66 @@ void CanvasView::mouseReleaseEvent(QMouseEvent *event) {
         if (event->position().x() > 20 && event->position().y() > 20)
             m_document->mutate("New guide",
                                [&] { m_document->state.guides.append({direction == 1, position}); });
+        update();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && m_straightening) {
+        const QPointF end = toDocument(event->position());
+        if (QLineF(m_start, end).length() > 2) {
+            const qreal angle =
+                std::atan2(end.y() - m_start.y(), end.x() - m_start.x()) * 180 / std::numbers::pi;
+            m_cropSettings.angle = -std::remainder(angle, 90.0);
+            setCropPreviewRect(
+                largestInscribedRotatedRectangle(m_document->state.size, m_cropSettings.angle));
+            emit cropSettingsChanged();
+        }
+        m_straightening = false;
+        m_straightenArmed = false;
+        m_dragging = false;
+        update();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && m_transformActive && m_transformHandle >= 0) {
+        updateTransformDrag(toDocument(event->position()), event->modifiers());
+        m_transformHandle = -1;
+        m_dragging = false;
+        update();
+        return;
+    }
+    if (event->button() == Qt::LeftButton &&
+        (m_cropHandle >= 0 || m_cropRotating || m_perspectiveHandle >= 0)) {
+        if (m_cropHandle >= 0)
+            updateCropDrag(toDocument(event->position()), event->modifiers());
+        m_cropHandle = -1;
+        m_perspectiveHandle = -1;
+        m_cropRotating = false;
+        m_dragging = false;
+        update();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && m_transportSelecting) {
+        const QImage mask =
+            paintCoverage(m_document->state.size, m_document->state.bitDepth, [&](QPainter &painter) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(Qt::white);
+                if (m_lasso.size() > 2)
+                    painter.drawPolygon(m_lasso);
+                else
+                    painter.drawRect(QRectF(m_start, toDocument(event->position())).normalized());
+            });
+        m_document->setSelection(mask, m_selectionOperation);
+        m_transportSelecting = false;
+        m_dragging = false;
+        m_lasso.clear();
+        update();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && m_transporting) {
+        finishTransport();
+        m_transporting = false;
+        m_dragging = false;
+        m_transportPreview = {};
+        m_transportMask = {};
         update();
         return;
     }
@@ -1376,13 +2281,11 @@ void CanvasView::mouseReleaseEvent(QMouseEvent *event) {
         }
         m_document->endTransaction();
         m_healMask = {};
+        m_lastStrokePoint = m_last;
+        m_hasLastStrokePoint = true;
     } else if (named(m_tool, {"Move", "Path Selection", "Direct Selection"}))
         m_document->endTransaction();
-    else if (named(m_tool, {"Crop", "Perspective Crop"})) {
-        const QRect crop = m_dragRect.toAlignedRect().intersected(documentRect(m_document));
-        if (crop.width() > 1 && crop.height() > 1)
-            m_document->crop(crop);
-    } else if (m_tool == "Gradient")
+    else if (m_tool == "Gradient")
         applyGradient();
     else if (shapeTool(m_tool) && QLineF(m_start, end).length() > 1) {
         m_document->mutate(m_tool, [&] {
@@ -1423,7 +2326,13 @@ void CanvasView::mouseReleaseEvent(QMouseEvent *event) {
     update();
 }
 void CanvasView::mouseDoubleClickEvent(QMouseEvent *event) {
-    if (named(m_tool, {"Polygonal Lasso", "Magnetic Lasso"}) && m_dragging) {
+    if (m_transformActive) {
+        commitTransform();
+        event->accept();
+    } else if (named(m_tool, {"Crop", "Perspective Crop"}) && hasCropPreview()) {
+        commitCrop();
+        event->accept();
+    } else if (named(m_tool, {"Polygonal Lasso", "Magnetic Lasso"}) && m_dragging) {
         m_lasso.append(toDocument(event->position()));
         finishSelection();
         m_dragging = false;
@@ -1462,25 +2371,32 @@ void CanvasView::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 void CanvasView::keyPressEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+    const bool nativeBinding =
+        !property("externalShortcuts").toBool() || property("shortcutForwarding").toBool();
+    if (event->key() == Qt::Key_Space && nativeBinding && !event->isAutoRepeat()) {
         m_space = true;
         setCursor(Qt::OpenHandCursor);
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Escape) {
-        if (m_dragging)
-            m_document->cancelTransaction();
-        m_dragging = false;
-        m_lasso.clear();
-        m_penLayerId = 0;
-        m_penPath = {};
-        m_dragRect = {};
-        update();
+    if (event->key() == Qt::Key_Escape && nativeBinding) {
+        cancelInteraction();
         event->accept();
         return;
     }
-    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && m_dragging &&
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && nativeBinding &&
+        m_transformActive) {
+        commitTransform();
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && nativeBinding &&
+        hasCropPreview()) {
+        commitCrop();
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && nativeBinding && m_dragging &&
         named(m_tool, {"Polygonal Lasso", "Magnetic Lasso"})) {
         finishSelection();
         m_dragging = false;
@@ -1488,38 +2404,56 @@ void CanvasView::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_BracketLeft) {
-        setBrushSize(int(m_brushSize / 1.15));
+    if (event->key() == Qt::Key_BracketLeft && nativeBinding) {
+        if (event->modifiers().testFlag(Qt::ShiftModifier))
+            setBrushHardness(m_hardness - .25);
+        else
+            setBrushSize(int(m_brushSize / 1.15));
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_BracketRight) {
-        setBrushSize(int(m_brushSize * 1.15) + 1);
+    if (event->key() == Qt::Key_BracketRight && nativeBinding) {
+        if (event->modifiers().testFlag(Qt::ShiftModifier))
+            setBrushHardness(m_hardness + .25);
+        else
+            setBrushSize(int(m_brushSize * 1.15) + 1);
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_X) {
+    if (event->key() == Qt::Key_X && nativeBinding && event->modifiers() == Qt::NoModifier) {
         std::swap(m_foreground, m_background);
         emit colorPicked(m_foreground);
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_D) {
+    if (event->key() == Qt::Key_D && nativeBinding && event->modifiers() == Qt::NoModifier) {
         m_foreground = Qt::black;
         m_background = Qt::white;
         emit colorPicked(m_foreground);
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Q) {
+    if (event->key() == Qt::Key_Q && nativeBinding && event->modifiers() == Qt::NoModifier) {
         setQuickMask(!m_quickMask);
+        event->accept();
+        return;
+    }
+    if (nativeBinding && event->key() >= Qt::Key_0 && event->key() <= Qt::Key_9 && paintTool(m_tool) &&
+        !event->modifiers().testFlag(Qt::ControlModifier) && !event->modifiers().testFlag(Qt::AltModifier)) {
+        setBrushOpacityByNumber(event->key() - Qt::Key_0, event->modifiers().testFlag(Qt::ShiftModifier));
+        event->accept();
+        return;
+    }
+    if (nativeBinding && event->key() == Qt::Key_O && m_cropActive) {
+        cycleCropOverlay();
         event->accept();
         return;
     }
     QWidget::keyPressEvent(event);
 }
 void CanvasView::keyReleaseEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat() &&
+        (!property("externalShortcuts").toBool() || property("shortcutForwarding").toBool())) {
         m_space = false;
         setCursor(m_tool == "Hand" ? Qt::OpenHandCursor : Qt::CrossCursor);
         event->accept();
@@ -1559,7 +2493,7 @@ void CanvasView::fillSelection(QColor color) {
             m_document->hasSelection() ? m_document->selectionBounds() : documentRect(m_document);
         if (bounds.isEmpty())
             return;
-        QImage image(bounds.size(), QImage::Format_ARGB32);
+        QImage image(bounds.size(), paintingFormat(m_document));
         color.setAlphaF(color.alphaF() * m_opacity);
         image.fill(color);
         applyImage(image, bounds.topLeft());
@@ -1573,7 +2507,7 @@ void CanvasView::strokeSelection(QColor color, int width) {
         const QRect bounds = m_document->selectionBounds()
                                  .adjusted(-width, -width, width, width)
                                  .intersected(documentRect(m_document));
-        QImage image(bounds.size(), QImage::Format_ARGB32);
+        QImage image(bounds.size(), paintingFormat(m_document));
         image.fill(Qt::transparent);
         QPainter painter(&image);
         painter.translate(-bounds.topLeft());
@@ -1591,7 +2525,7 @@ void CanvasView::applyGradient() {
             m_document->hasSelection() ? m_document->selectionBounds() : documentRect(m_document);
         if (bounds.isEmpty())
             return;
-        QImage image(bounds.size(), QImage::Format_ARGB32);
+        QImage image(bounds.size(), paintingFormat(m_document));
         image.fill(Qt::transparent);
         QPainter painter(&image);
         QLinearGradient gradient(m_start - QPointF(bounds.topLeft()), m_last - QPointF(bounds.topLeft()));
@@ -1647,7 +2581,7 @@ void CanvasView::bucket(QPoint point) {
         return;
     }
     const QRect bounds(QPoint(left, top), QPoint(right, bottom));
-    QImage image(bounds.size(), QImage::Format_ARGB32);
+    QImage image(bounds.size(), paintingFormat(m_document));
     image.fill(Qt::transparent);
     for (const QPoint p : queue) {
         QColor color = m_foreground;
@@ -1689,9 +2623,13 @@ void CanvasView::perspectiveCrop() {
     const QPolygonF quad = m_perspectivePoints;
     m_perspectivePoints.clear();
     const int width =
-        std::max(1, qRound((QLineF(quad[0], quad[1]).length() + QLineF(quad[3], quad[2]).length()) / 2));
+        m_cropSettings.outputSize.isEmpty()
+            ? std::max(1, qRound((QLineF(quad[0], quad[1]).length() + QLineF(quad[3], quad[2]).length()) / 2))
+            : m_cropSettings.outputSize.width();
     const int height =
-        std::max(1, qRound((QLineF(quad[0], quad[3]).length() + QLineF(quad[1], quad[2]).length()) / 2));
+        m_cropSettings.outputSize.isEmpty()
+            ? std::max(1, qRound((QLineF(quad[0], quad[3]).length() + QLineF(quad[1], quad[2]).length()) / 2))
+            : m_cropSettings.outputSize.height();
     QTransform transform;
     if (!QTransform::quadToQuad(
             quad, QPolygonF{{0, 0}, {qreal(width), 0}, {qreal(width), qreal(height)}, {0, qreal(height)}},
@@ -1723,18 +2661,28 @@ void CanvasView::perspectiveCrop() {
                 layer.kind = LayerKind::Pixel;
             }
             if (!layer.mask.isNull()) {
-                QImage mask(width, height, layer.mask.format());
-                mask.fill(0);
-                QPainter painter(&mask);
-                painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                painter.setTransform(transform);
-                painter.drawImage(offset, layer.mask);
-                painter.end();
+                const QImage mask =
+                    paintCoverage({width, height}, layer.mask.depth(), [&](QPainter &painter) {
+                        painter.setTransform(transform);
+                        painter.drawImage(offset + (layer.maskLinked ? QPointF() : layer.maskOffset),
+                                          layer.mask);
+                    });
                 layer.mask = mask;
+                layer.maskOffset = {};
+            }
+            if (!layer.vectorMask.isEmpty()) {
+                QTransform position;
+                const QPointF vectorOffset =
+                    offset + (layer.vectorMaskLinked ? QPointF() : layer.vectorMaskOffset);
+                position.translate(vectorOffset.x(), vectorOffset.y());
+                layer.vectorMask = transform.map(position.map(layer.vectorMask));
+                layer.vectorMaskOffset = {};
             }
             layer.offset = {};
         }
         m_document->state.size = {width, height};
+        if (m_cropSettings.resolution > 0)
+            m_document->state.resolution = m_cropSettings.resolution;
         m_document->state.selection = {};
         m_document->state.guides.clear();
         QJsonArray points;
@@ -1754,18 +2702,18 @@ void CanvasView::removeBackground() {
         return;
     m_document->mutate("Remove background", [&] {
         Layer *layer = m_document->activeLayer();
-        QImage mask(layer->pixels.size.isEmpty() ? m_document->state.size : layer->pixels.size,
-                    QImage::Format_Grayscale8);
-        mask.fill(0);
-        QPainter painter(&mask);
-        painter.drawImage(-effectiveOffset(m_document, *layer), selection);
-        painter.end();
+        const QSize size = !layer->mask.isNull()          ? layer->mask.size()
+                           : layer->pixels.size.isEmpty() ? m_document->state.size
+                                                          : layer->pixels.size;
+        QImage mask = paintCoverage(size, m_document->state.bitDepth, [&](QPainter &painter) {
+            painter.drawImage(-effectiveOffset(m_document, *layer) -
+                                  (layer->maskLinked ? QPointF() : layer->maskOffset),
+                              selection);
+        });
         if (!layer->mask.isNull()) {
-            for (int y = 0; y < mask.height(); ++y) {
-                auto *row = mask.scanLine(y);
+            for (int y = 0; y < mask.height(); ++y)
                 for (int x = 0; x < mask.width(); ++x)
-                    row[x] = quint8(row[x] * qGray(layer->mask.pixel(x, y)) / 255);
-            }
+                    setMaskSample(mask, x, y, maskSample(mask, x, y) * maskSample(layer->mask, x, y));
         }
         layer->mask = mask;
         layer->maskEnabled = true;
@@ -1779,12 +2727,21 @@ void CanvasView::contentAwareFill() {
     m_document->mutate("Content-aware fill", [&] {
         Layer *layer = m_document->activeLayer();
         const QImage source = m_document->layerImage(*layer);
-        QImage localMask(source.size(), QImage::Format_Grayscale8);
-        localMask.fill(0);
-        QPainter painter(&localMask);
-        painter.drawImage(-effectiveOffset(m_document, *layer), m_document->state.selection);
-        painter.end();
+        const QImage localMask =
+            paintCoverage(source.size(), m_document->state.bitDepth, [&](QPainter &painter) {
+                painter.drawImage(-effectiveOffset(m_document, *layer), m_document->state.selection);
+            });
         QImage result = synthesizePatches(source, localMask);
+        for (int y = 0; y < source.height(); ++y)
+            for (int x = 0; x < source.width(); ++x) {
+                const qreal coverage = maskSample(localMask, x, y);
+                const QColor a = source.pixelColor(x, y), b = result.pixelColor(x, y);
+                result.setPixelColor(x, y,
+                                     QColor::fromRgbF(a.redF() * (1 - coverage) + b.redF() * coverage,
+                                                      a.greenF() * (1 - coverage) + b.greenF() * coverage,
+                                                      a.blueF() * (1 - coverage) + b.blueF() * coverage,
+                                                      a.alphaF() * (1 - coverage) + b.alphaF() * coverage));
+            }
         layer->pixels.setImage(result);
         layer->kind = LayerKind::Pixel;
         m_document->touch();

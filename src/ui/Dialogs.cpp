@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "actions/ActionRunner.h"
 #include "io/FormatIO.h"
+#include "tools/LocalAlgorithms.h"
+#include "ui/dialogs/MaskRefineDialog.h"
 #include <QApplication>
 #include <QBoxLayout>
 #include <QCheckBox>
@@ -352,33 +354,14 @@ void MainWindow::filter(const QString &name, bool repeat) {
         params = collect();
     }
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    d->mutate(name, [d, name, params] {
-        auto *l = d->activeLayer();
-        QImage source = d->layerImage(*l), result = applyFilter(source, name, params);
-        if (d->hasSelection()) {
-            for (int y = 0; y < result.height(); y++)
-                for (int x = 0; x < result.width(); x++) {
-                    int sx = qRound(x + l->offset.x()), sy = qRound(y + l->offset.y());
-                    double a = d->state.selection.rect().contains(sx, sy)
-                                   ? qGray(d->state.selection.pixel(sx, sy)) / 255.
-                                   : 0;
-                    auto old = source.pixelColor(x, y), fresh = result.pixelColor(x, y);
-                    result.setPixelColor(x, y,
-                                         QColor::fromRgbF(old.redF() * (1 - a) + fresh.redF() * a,
-                                                          old.greenF() * (1 - a) + fresh.greenF() * a,
-                                                          old.blueF() * (1 - a) + fresh.blueF() * a,
-                                                          old.alphaF()));
-                }
-        }
-        l->pixels.setImage(result);
-        if (l->kind != LayerKind::SmartObject)
-            l->kind = LayerKind::Pixel;
-        else {
-            QJsonArray filters = l->parameters["smartFilters"].toArray();
-            filters.append(QJsonObject{{"name", name}, {"parameters", params}});
-            l->parameters["smartFilters"] = filters;
-        }
-    });
+    if (d->activeLayer()->kind == LayerKind::SmartObject)
+        d->addSmartFilter(name, params);
+    else {
+        QString error;
+        if (!ActionRunner::execute(
+                d, QJsonObject{{"command", "filter"}, {"name", name}, {"parameters", params}}, &error))
+            showMessage(error);
+    }
     QApplication::restoreOverrideCursor();
     m_lastFilter = name;
     m_lastFilterParameters = params;
@@ -523,25 +506,7 @@ void MainWindow::transformDialog() {
     auto *c = currentCanvas();
     if (!c)
         return;
-    QDialog dialog(this);
-    dialog.setWindowTitle("Transform layer");
-    auto *v = new QVBoxLayout(&dialog);
-    auto *f = new QFormLayout;
-    auto *scale = new QDoubleSpinBox;
-    scale->setRange(1, 1000);
-    scale->setValue(100);
-    scale->setSuffix("%");
-    auto *angle = new QDoubleSpinBox;
-    angle->setRange(-360, 360);
-    angle->setSuffix("°");
-    f->addRow("Scale", scale);
-    f->addRow("Rotation", angle);
-    v->addLayout(f);
-    dialogButtons(dialog, v);
-    if (dialog.exec() == QDialog::Accepted) {
-        c->transformActive(scale->value() / 100., angle->value());
-        recordStep("transform", {}, QJsonObject{{"scale", scale->value()}, {"angle", angle->value()}});
-    }
+    c->beginTransform();
 }
 void MainWindow::layerStyles() {
     auto *d = currentDocument();
@@ -802,45 +767,6 @@ void MainWindow::palette() {
     search->setFocus();
     dialog.exec();
 }
-void MainWindow::keyboardShortcuts() {
-    QDialog dialog(this);
-    dialog.setWindowTitle("Keyboard shortcuts");
-    dialog.resize(650, 580);
-    auto *v = new QVBoxLayout(&dialog);
-    auto *table = new QTableWidget(0, 2);
-    table->setHorizontalHeaderLabels({"Command", "Shortcut"});
-    table->setColumnWidth(0, 380);
-    QStringList keys = m_commands.keys();
-    keys.sort();
-    for (const auto &name : keys) {
-        if (name.startsWith("Tool "))
-            continue;
-        int row = table->rowCount();
-        table->insertRow(row);
-        auto *label = new QTableWidgetItem(name);
-        label->setFlags(label->flags() & ~Qt::ItemIsEditable);
-        table->setItem(row, 0, label);
-        table->setItem(row, 1, new QTableWidgetItem(m_commands[name]->shortcut().toString()));
-    }
-    v->addWidget(table);
-    dialogButtons(dialog, v);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    QJsonObject json;
-    for (int i = 0; i < table->rowCount(); i++) {
-        auto name = table->item(i, 0)->text(), text = table->item(i, 1)->text();
-        m_commands[name]->setShortcut(QKeySequence(text));
-        m_settings.setValue("shortcuts/" + name, text);
-        json[name] = text;
-    }
-    QString folder = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(folder);
-    QSaveFile f(folder + "/shortcuts.json");
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(json).toJson());
-        f.commit();
-    }
-}
 void MainWindow::batchDialog() {
     auto input = QFileDialog::getExistingDirectory(this, "Batch input folder");
     if (input.isEmpty())
@@ -900,64 +826,43 @@ void MainWindow::renameLayer() {
 }
 void MainWindow::selectAndMask() {
     auto *d = currentDocument();
-    if (!d)
+    if (!d || !d->activeLayer())
         return;
-    if (!d->hasSelection())
-        currentCanvas()->selectSubject();
-    QDialog dialog(this);
-    dialog.setWindowTitle("Select and Mask");
-    dialog.resize(600, 550);
-    auto *v = new QVBoxLayout(&dialog);
-    auto *preview = new QLabel;
-    preview->setAlignment(Qt::AlignCenter);
-    v->addWidget(preview, 1);
-    auto *form = new QFormLayout;
-    auto *view = new QComboBox;
-    view->addItems({"Overlay", "Black", "White", "Onion skin"});
-    auto *feather = new QSpinBox;
-    feather->setRange(0, 50);
-    auto *contrast = new QSpinBox;
-    contrast->setRange(0, 100);
-    form->addRow("View", view);
-    form->addRow("Feather (px)", feather);
-    form->addRow("Contrast", contrast);
-    v->addLayout(form);
-    auto source = d->composite();
-    auto mask = d->state.selection;
-    auto update = [&] {
-        QImage result = source.scaled(530, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        auto small = mask.scaled(result.size());
-        for (int y = 0; y < result.height(); y++)
-            for (int x = 0; x < result.width(); x++) {
-                double a = qGray(small.pixel(x, y)) / 255.;
-                auto c = result.pixelColor(x, y);
-                QColor bg = view->currentIndex() == 1   ? Qt::black
-                            : view->currentIndex() == 2 ? Qt::white
-                                                        : QColor(232, 55, 60);
-                double amount = view->currentIndex() == 0 ? (1 - a) * .5 : 1 - a;
-                result.setPixelColor(x, y,
-                                     QColor::fromRgbF(c.redF() * (1 - amount) + bg.redF() * amount,
-                                                      c.greenF() * (1 - amount) + bg.greenF() * amount,
-                                                      c.blueF() * (1 - amount) + bg.blueF() * amount));
-            }
-        preview->setPixmap(QPixmap::fromImage(result));
-    };
-    connect(view, &QComboBox::currentIndexChanged, &dialog, [&](int) { update(); });
-    update();
-    dialogButtons(dialog, v);
+    const auto source = d->composite();
+    const auto initial = d->hasSelection() ? d->state.selection : selectSubjectLocally(source);
+    MaskRefineDialog dialog(source, initial, d->state.bitDepth, this);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    d->mutate("Refine selection", [&] {
-        auto refined = mask;
-        if (feather->value())
-            refined = applyFilter(refined.convertToFormat(QImage::Format_RGBA8888), "Gaussian Blur",
-                                  QJsonObject{{"radius", feather->value()}})
-                          .convertToFormat(QImage::Format_Grayscale8);
-        if (contrast->value())
-            refined =
-                applyAdjustment(refined, "Brightness/Contrast", QJsonObject{{"contrast", contrast->value()}})
-                    .convertToFormat(QImage::Format_Grayscale8);
-        d->state.selection = refined;
+    const auto mask = dialog.refinedMask();
+    const auto mode = dialog.outputMode();
+    d->mutate("Select and Mask", [&] {
+        if (mode == MaskRefineDialog::Output::Selection)
+            d->setSelection(mask);
+        else if (mode == MaskRefineDialog::Output::LayerMask) {
+            auto *l = d->activeLayer();
+            const auto origin = d->effectiveLayerOffset(*l).toPoint();
+            const auto extent = d->layerImage(*l).size();
+            l->mask = makeMask(extent, d->state.bitDepth);
+            for (int y = 0; y < extent.height(); ++y)
+                for (int x = 0; x < extent.width(); ++x)
+                    setMaskSample(l->mask, x, y, maskSample(mask, x + origin.x(), y + origin.y()));
+            l->maskEnabled = true;
+            l->maskTarget = true;
+            l->maskDensity = 1;
+            l->maskFeather = 0;
+            l->maskOffset = {};
+            l->maskLinked = true;
+        } else {
+            d->addLayer("Refined selection");
+            auto *l = d->activeLayer();
+            l->parentId = 0;
+            l->pixels.setImage(dialog.outputImage());
+            if (mode == MaskRefineDialog::Output::NewLayerWithMask) {
+                l->mask = mask;
+                l->maskTarget = true;
+            }
+        }
     });
 }
+
 } // namespace serika

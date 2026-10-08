@@ -1,6 +1,7 @@
 #pragma once
 #include "document/Document.h"
 #include "ui/canvas/CanvasView.h"
+#include "ui/shortcuts/ShortcutRegistry.h"
 #include <QHash>
 #include <QJsonArray>
 #include <QMainWindow>
@@ -33,6 +34,7 @@ class MainWindow : public QMainWindow {
     QStringList dockNames() const;
     void runCommand(const QString &name);
     void saveWorkspace();
+    ShortcutRegistry *shortcutRegistry() const { return m_shortcuts; }
 
   protected:
     void closeEvent(QCloseEvent *) override;
@@ -50,6 +52,12 @@ class MainWindow : public QMainWindow {
     QHash<QString, QDockWidget *> m_docks;
     QHash<QString, QAction *> m_commands;
     QHash<QString, QToolButton *> m_tools;
+    ShortcutRegistry *m_shortcuts = nullptr;
+    QHash<QString, QString> m_lastToolInGroup;
+    QElapsedTimer m_opacityTimer;
+    QString m_opacityDigits;
+    QString m_opacityTarget;
+    QHash<QString, QPointer<CanvasView>> m_holdCanvases;
     QTreeWidget *m_layers = nullptr;
     QComboBox *m_blend = nullptr;
     QSpinBox *m_layerOpacity = nullptr;
@@ -90,6 +98,13 @@ class MainWindow : public QMainWindow {
     QPointer<QWidget> m_draggedPage;
     void detachDocument(int index);
     void buildMenus();
+    void initializeShortcuts();
+    void activateShortcut(const ShortcutEntry &entry, bool released);
+    void updateShortcutLabels();
+    void buildCropOptions();
+    void applyCropOptions();
+    void addMaskProperties(Document *document, quint64 layerId, bool vector);
+    void addSmartFilterProperties(Document *document, quint64 layerId);
     void buildHome();
     void buildTools();
     void buildOptions();

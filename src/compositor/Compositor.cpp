@@ -1,4 +1,5 @@
 #include "../document/Document.h"
+#include "../io/FormatIO.h"
 #include <QColorSpace>
 #include <QFontMetricsF>
 #include <QJsonArray>
@@ -321,27 +322,16 @@ double curve(double x, const std::vector<QPointF> &points) {
     return clamp((2 * t * t * t - 3 * t * t + 1) * a.y() + (t * t * t - 2 * t * t + t) * dx * m0 +
                  (-2 * t * t * t + 3 * t * t) * b.y() + (t * t * t - t * t) * dx * m1);
 }
-QImage grayMask(const QImage &image) {
-    return image.format() == QImage::Format_Grayscale16 ? image
-                                                        : image.convertToFormat(QImage::Format_Grayscale8);
-}
-double maskValue(const QImage &mask, int x, int y) {
-    if (!mask.rect().contains(x, y))
-        return 0;
-    return mask.format() == QImage::Format_Grayscale16
-               ? reinterpret_cast<const quint16 *>(mask.constScanLine(y))[x] / 65535.
-               : mask.constScanLine(y)[x] / 255.;
-}
+double maskValue(const QImage &mask, int x, int y) { return maskSample(mask, x, y); }
 QImage alphaMask(const QImage &image, bool preserveDepth = false) {
-    QImage mask(image.size(),
-                preserveDepth && image.depth() > 32 ? QImage::Format_Grayscale16 : QImage::Format_Grayscale8);
+    QImage mask = makeMask(image.size(), preserveDepth ? (image.format() == QImage::Format_RGBA32FPx4 ? 32
+                                                          : image.depth() > 32                        ? 16
+                                                                                                      : 8)
+                                                       : 8);
     for (int y = 0; y < image.height(); ++y)
         for (int x = 0; x < image.width(); ++x) {
             const double a = clamp(readPixel(image, x, y).a);
-            if (mask.format() == QImage::Format_Grayscale16)
-                reinterpret_cast<quint16 *>(mask.scanLine(y))[x] = quint16(qRound(a * 65535));
-            else
-                mask.scanLine(y)[x] = uchar(qRound(a * 255));
+            setMaskSample(mask, x, y, a);
         }
     return mask;
 }
@@ -654,17 +644,18 @@ QImage applyEffects(QImage image, const QJsonObject &effects, double fill = 1) {
     return below;
 }
 void maskLayer(QImage &image, const Layer &layer, double amount = 1) {
-    const QImage mask = layer.maskEnabled ? grayMask(layer.mask) : QImage();
+    const QImage mask = renderedLayerMask(layer, image.size(),
+                                          image.format() == QImage::Format_RGBA32FPx4 ? 32
+                                          : image.depth() > 32                        ? 16
+                                                                                      : 8);
     if (mask.isNull() && amount == 1)
         return;
     for (int y = 0; y < image.height(); ++y)
         for (int x = 0; x < image.width(); ++x) {
             Pixel p = readPixel(image, x, y);
             double alpha = amount;
-            if (!mask.isNull()) {
-                const QPoint local = QPoint(x, y) - layer.offset.toPoint();
-                alpha *= maskValue(mask, local.x(), local.y());
-            }
+            if (!mask.isNull())
+                alpha *= maskValue(mask, x, y);
             p.a *= alpha;
             writePixel(image, x, y, p);
         }
@@ -677,13 +668,56 @@ QColor blendColor(QColor backdrop, QColor source, const QString &mode) {
     return QColor::fromRgbF(clamp(color[0]), clamp(color[1]), clamp(color[2]), source.alphaF());
 }
 QImage renderLayerImage(const Layer &layer, const QSize &canvas, int bitDepth) {
-    if (layer.kind == LayerKind::Pixel || layer.kind == LayerKind::SmartObject)
-        return layer.pixels.image();
+    const auto transformedContent = [&](QImage image) {
+        const QJsonArray matrix = layer.parameters.value("contentTransform").toArray();
+        if (matrix.size() == 9) {
+            const QTransform transform(matrix[0].toDouble(), matrix[1].toDouble(), matrix[2].toDouble(),
+                                       matrix[3].toDouble(), matrix[4].toDouble(), matrix[5].toDouble(),
+                                       matrix[6].toDouble(), matrix[7].toDouble(), matrix[8].toDouble());
+            if (transform.isInvertible())
+                image = image.transformed(transform, Qt::SmoothTransformation);
+        }
+        return image;
+    };
+    if (layer.kind == LayerKind::Pixel || layer.kind == LayerKind::SmartObject) {
+        QImage image = layer.pixels.image();
+        if (layer.kind == LayerKind::SmartObject) {
+            for (const auto &value : layer.smartFilters) {
+                const QJsonObject entry = value.toObject();
+                if (!entry.value("enabled").toBool(true))
+                    continue;
+                const QString name = entry.value("name").toString();
+                const QJsonObject parameters = entry.value("parameters").toObject();
+                QImage filtered =
+                    (entry.value("kind").toString() == "adjustment" || adjustmentNames().contains(name))
+                        ? applyAdjustment(image, name, parameters)
+                        : applyFilter(image, name, parameters);
+                if (filtered.isNull() || filtered.size() != image.size())
+                    continue;
+                filtered = normalImage(filtered).convertToFormat(image.format());
+                const double opacity = clamp(entry.value("opacity").toDouble(1));
+                const QString mode = entry.value("blendMode").toString("Normal");
+                if (opacity == 1 && mode == "Normal")
+                    image = filtered;
+                else
+                    for (int y = 0; y < image.height(); ++y)
+                        for (int x = 0; x < image.width(); ++x) {
+                            const Pixel a = readPixel(filtered, x, y), b = readPixel(image, x, y);
+                            const Triple blend = blended({b.r, b.g, b.b}, {a.r, a.g, a.b}, mode);
+                            writePixel(image, x, y,
+                                       {b.r + (blend[0] - b.r) * opacity, b.g + (blend[1] - b.g) * opacity,
+                                        b.b + (blend[2] - b.b) * opacity, b.a + (a.a - b.a) * opacity});
+                        }
+            }
+        }
+        return transformedContent(image);
+    }
     QImage image = blank(canvas, nativeFormat(bitDepth));
     QPainter p(&image);
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::TextAntialiasing);
     if (layer.kind == LayerKind::Text) {
+        p.rotate(layer.parameters.value("rotation").toDouble());
         p.setFont(layer.font);
         p.setPen(layer.color);
         if (layer.parameters.value("vertical").toBool()) {
@@ -731,7 +765,8 @@ QImage renderLayerImage(const Layer &layer, const QSize &canvas, int bitDepth) {
         }
         p.fillRect(image.rect(), gradient);
     }
-    return image;
+    p.end();
+    return transformedContent(image);
 }
 
 QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObject &parameters) {
@@ -1000,7 +1035,10 @@ QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObj
                 }
                 c = mixed;
             }
-            writePixel(result, x, y, {clamp(c[0]), clamp(c[1]), clamp(c[2]), p.a});
+            if (input.format() == QImage::Format_RGBA32FPx4 && name == "Exposure")
+                writePixel(result, x, y, {c[0], c[1], c[2], p.a});
+            else
+                writePixel(result, x, y, {clamp(c[0]), clamp(c[1]), clamp(c[2]), p.a});
         }
     return result;
 }
@@ -1061,16 +1099,14 @@ QImage compositeDocument(const DocumentState &state, bool linear) {
                 continue;
             if (l.kind == LayerKind::Adjustment) {
                 QImage adjusted = applyAdjustment(backdrop, l.adjustment, l.parameters);
-                const QImage mask = l.maskEnabled ? grayMask(l.mask) : QImage();
+                const QImage mask = renderedLayerMask(l, state.size, state.bitDepth);
                 const double opacity = clamp(l.opacity * l.fill);
                 for (int y = 0; y < backdrop.height(); ++y)
                     for (int x = 0; x < backdrop.width(); ++x) {
                         Pixel a = readPixel(adjusted, x, y), b = readPixel(backdrop, x, y);
                         double weight = opacity;
-                        if (!mask.isNull()) {
-                            const QPoint pos = QPoint(x, y) - l.offset.toPoint();
-                            weight *= maskValue(mask, pos.x(), pos.y());
-                        }
+                        if (!mask.isNull())
+                            weight *= maskValue(mask, x, y);
                         if (l.clipped)
                             weight *= maskValue(clip, x, y);
                         const Triple blend = blended({b.r, b.g, b.b}, {a.r, a.g, a.b}, l.blendMode);
@@ -1092,15 +1128,13 @@ QImage compositeDocument(const DocumentState &state, bool linear) {
                     render(l.id, after);
                     // Interpolate premultiplied results so pass-through adjustments and child
                     // blends see the actual backdrop, including at fractional group opacity.
-                    const QImage mask = l.maskEnabled ? grayMask(l.mask) : QImage();
+                    const QImage mask = renderedLayerMask(l, state.size, state.bitDepth);
                     for (int y = 0; y < backdrop.height(); ++y)
                         for (int x = 0; x < backdrop.width(); ++x) {
                             Pixel b = readPixel(before, x, y), a = readPixel(after, x, y);
                             double weight = clamp(l.opacity * l.fill);
-                            if (!mask.isNull()) {
-                                const QPoint pos = QPoint(x, y) - l.offset.toPoint();
-                                weight *= maskValue(mask, pos.x(), pos.y());
-                            }
+                            if (!mask.isNull())
+                                weight *= maskValue(mask, x, y);
                             if (l.clipped)
                                 weight *= maskValue(clip, x, y);
                             const double alpha = b.a + (a.a - b.a) * weight;
@@ -1161,15 +1195,13 @@ QImage compositeDocument(const DocumentState &state, bool linear) {
                         continue;
                     if (upper.kind == LayerKind::Adjustment) {
                         const QImage adjusted = applyAdjustment(placed, upper.adjustment, upper.parameters);
-                        const QImage mask = upper.maskEnabled ? grayMask(upper.mask) : QImage();
+                        const QImage mask = renderedLayerMask(upper, state.size, state.bitDepth);
                         for (int y = 0; y < placed.height(); ++y)
                             for (int x = 0; x < placed.width(); ++x) {
                                 const Pixel b = readPixel(placed, x, y), a = readPixel(adjusted, x, y);
                                 double weight = clamp(upper.opacity * upper.fill);
-                                if (!mask.isNull()) {
-                                    const QPoint local = QPoint(x, y) - upper.offset.toPoint();
-                                    weight *= maskValue(mask, local.x(), local.y());
-                                }
+                                if (!mask.isNull())
+                                    weight *= maskValue(mask, x, y);
                                 const Triple blend =
                                     blended({b.r, b.g, b.b}, {a.r, a.g, a.b}, upper.blendMode);
                                 writePixel(placed, x, y,

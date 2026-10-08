@@ -36,6 +36,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -98,39 +99,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_settings("Serik
     const auto geometry = m_settings.value("geometry").toByteArray();
     if (!geometry.isEmpty())
         restoreGeometry(geometry);
-    auto *hidePanels = new QShortcut(QKeySequence(Qt::Key_Tab), this);
-    connect(hidePanels, &QShortcut::activated, this, [this] { setPanelsVisible(true); });
-    auto *hideDocks = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Tab), this);
-    connect(hideDocks, &QShortcut::activated, this, [this] { setPanelsVisible(false); });
-    auto *screen = new QShortcut(QKeySequence("F"), this);
-    connect(screen, &QShortcut::activated, this, [this] { runCommand("Screen Mode"); });
-    auto *swap = new QShortcut(QKeySequence("X"), this);
-    connect(swap, &QShortcut::activated, this, [this] {
-        std::swap(m_foreground, m_background);
-        selectTool(m_tool);
-    });
-    auto *defaults = new QShortcut(QKeySequence("D"), this);
-    connect(defaults, &QShortcut::activated, this, [this] {
-        m_foreground = Qt::black;
-        m_background = Qt::white;
-        selectTool(m_tool);
-    });
-    auto *qm = new QShortcut(QKeySequence("Q"), this);
-    connect(qm, &QShortcut::activated, this, [this] {
-        m_quickMask = !m_quickMask;
-        if (auto *c = currentCanvas())
-            c->setQuickMask(m_quickMask);
-    });
-    auto *larger = new QShortcut(QKeySequence("]"), this);
-    connect(larger, &QShortcut::activated, this, [this] {
-        if (auto *s = m_options->findChild<QSpinBox *>("brushSize"))
-            s->setValue(s->value() + 5);
-    });
-    auto *smaller = new QShortcut(QKeySequence("["), this);
-    connect(smaller, &QShortcut::activated, this, [this] {
-        if (auto *s = m_options->findChild<QSpinBox *>("brushSize"))
-            s->setValue(s->value() - 5);
-    });
+    initializeShortcuts();
     connect(&m_recovery, &QTimer::timeout, this, &MainWindow::saveRecovery);
     m_recovery.start(10 * 60 * 1000);
     m_refreshTimer.setSingleShot(true);
@@ -157,11 +126,8 @@ QAction *MainWindow::command(QMenu *menu, const QString &name, const QKeySequenc
         return m_commands[name];
     }
     auto *a = menu->addAction(name);
-    a->setShortcut(shortcut);
+    Q_UNUSED(shortcut);
     m_commands[name] = a;
-    const QString custom = m_settings.value("shortcuts/" + name).toString();
-    if (!custom.isEmpty())
-        a->setShortcut(QKeySequence(custom));
     connect(a, &QAction::triggered, this, [this, name] { runCommand(name); });
     return a;
 }
@@ -274,7 +240,8 @@ void MainWindow::buildMenus() {
     auto *layer = menuBar()->addMenu("Layer");
     command(layer, "New Layer...", QKeySequence("Ctrl+Shift+N"));
     command(layer, "New Layer", QKeySequence("Ctrl+Alt+Shift+N"));
-    command(layer, "Duplicate Layer", QKeySequence("Ctrl+J"));
+    command(layer, "Layer via Copy", QKeySequence("Ctrl+J"));
+    command(layer, "Duplicate Layer");
     command(layer, "Layer via Cut", QKeySequence("Ctrl+Shift+J"));
     command(layer, "Delete Layer");
     command(layer, "Rename Layer...");
@@ -532,6 +499,20 @@ void MainWindow::buildOptions() {
     toolLabel->setFixedWidth(85);
     m_options->addWidget(toolLabel);
     m_options->addSeparator();
+    auto *brushModeLabel = new QLabel("Mode:");
+    auto *brushModeLabelAction = m_options->addWidget(brushModeLabel);
+    brushModeLabelAction->setProperty("brushOption", true);
+    auto *brushMode = new QComboBox;
+    brushMode->setObjectName("brushMode");
+    brushMode->addItems(blendModeNames());
+    brushMode->addItems({"Behind", "Clear"});
+    brushMode->setMaximumWidth(125);
+    auto *brushModeAction = m_options->addWidget(brushMode);
+    brushModeAction->setProperty("brushOption", true);
+    connect(brushMode, &QComboBox::currentTextChanged, this, [this](const QString &mode) {
+        if (auto *canvas = currentCanvas())
+            canvas->setProperty("brushBlendMode", mode);
+    });
     m_options->addWidget(new QLabel("Size:"));
     auto *size = new QSpinBox;
     size->setObjectName("brushSize");
@@ -558,7 +539,7 @@ void MainWindow::buildOptions() {
     });
     m_options->addWidget(new QLabel("Opacity:"));
     auto *opacity = new QSpinBox;
-    opacity->setRange(1, 100);
+    opacity->setRange(0, 100);
     opacity->setValue(100);
     opacity->setSuffix("%");
     opacity->setFixedWidth(60);
@@ -570,7 +551,7 @@ void MainWindow::buildOptions() {
     });
     m_options->addWidget(new QLabel("Flow:"));
     auto *flow = new QSpinBox;
-    flow->setRange(1, 100);
+    flow->setRange(0, 100);
     flow->setValue(100);
     flow->setSuffix("%");
     flow->setFixedWidth(60);
@@ -627,6 +608,7 @@ void MainWindow::buildOptions() {
         if (doc && doc->activeLayer() && doc->activeLayer()->kind == LayerKind::Text)
             doc->mutate("Type size", [doc, size] { doc->activeLayer()->font.setPixelSize(size); });
     });
+    buildCropOptions();
     auto *spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_options->addWidget(spacer);
@@ -687,29 +669,7 @@ void MainWindow::buildTools() {
     auto *grid = new QGridLayout;
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(1);
-    const QList<QPair<QString, QStringList>> groups = {
-        {"V", {"Move", "Artboard"}},
-        {"M", {"Rectangular Marquee", "Elliptical Marquee", "Single Row", "Single Column"}},
-        {"L", {"Lasso", "Polygonal Lasso", "Magnetic Lasso"}},
-        {"W", {"Object Selection", "Quick Selection", "Magic Wand"}},
-        {"C", {"Crop", "Perspective Crop", "Slice", "Slice Select"}},
-        {"K", {"Frame"}},
-        {"I", {"Eyedropper", "Color Sampler", "Ruler", "Note", "Count"}},
-        {"J", {"Spot Healing", "Healing Brush", "Patch", "Content-Aware Move", "Red Eye"}},
-        {"B", {"Brush", "Pencil", "Color Replacement", "Mixer Brush"}},
-        {"S", {"Clone Stamp", "Pattern Stamp"}},
-        {"Y", {"History Brush", "Art History Brush"}},
-        {"E", {"Eraser", "Background Eraser", "Magic Eraser"}},
-        {"G", {"Gradient", "Paint Bucket"}},
-        {"", {"Blur", "Sharpen", "Smudge"}},
-        {"O", {"Dodge", "Burn", "Sponge"}},
-        {"P", {"Pen", "Freeform Pen", "Curvature Pen", "Add Anchor", "Delete Anchor", "Convert Point"}},
-        {"T", {"Horizontal Type", "Vertical Type", "Horizontal Type Mask", "Vertical Type Mask"}},
-        {"A", {"Path Selection", "Direct Selection"}},
-        {"U", {"Rectangle", "Ellipse", "Triangle", "Polygon", "Line", "Custom Shape"}},
-        {"H", {"Hand"}},
-        {"R", {"Rotate View"}},
-        {"Z", {"Zoom"}}};
+    const auto groups = ShortcutRegistry::toolGroups();
     int row = 0;
     for (const auto &g : groups) {
         auto *b = new QToolButton;
@@ -741,14 +701,6 @@ void MainWindow::buildTools() {
         });
         grid->addWidget(b, m_twoColumns ? row / 2 : row, m_twoColumns ? row % 2 : 0);
         row++;
-        if (!g.first.isEmpty() && !m_commands.contains("Tool " + g.first)) {
-            auto *s = new QShortcut(QKeySequence(g.first), this);
-            connect(s, &QShortcut::activated, this, [this, g] { selectTool(g.second.first()); });
-            auto *cycle = new QShortcut(QKeySequence("Shift+" + g.first), this);
-            connect(cycle, &QShortcut::activated, this,
-                    [this, g] { selectTool(g.second[(g.second.indexOf(m_tool) + 1) % g.second.size()]); });
-            m_commands["Tool " + g.first] = new QAction(this);
-        }
     }
     v->addLayout(grid);
     v->addStretch();
@@ -782,6 +734,7 @@ void MainWindow::buildTools() {
     screen->setToolTip("Screen Mode (F)");
     v->addWidget(screen);
     connect(screen, &QToolButton::clicked, this, [this] { runCommand("Screen Mode"); });
+    updateShortcutLabels();
 }
 QDockWidget *MainWindow::dock(const QString &name, QWidget *widget, bool visible) {
     auto *d = new QDockWidget(name, this);
@@ -907,6 +860,17 @@ void MainWindow::buildLayers(QWidget *parent) {
         auto *layer = doc->activeLayer();
         if (layer) {
             layer->maskTarget = column == 2 && !layer->mask.isNull();
+            if (layer->maskTarget) {
+                if (QApplication::keyboardModifiers().testFlag(Qt::ShiftModifier))
+                    runCommand("Toggle Layer Mask");
+                else if (QApplication::keyboardModifiers().testFlag(Qt::AltModifier)) {
+                    if (auto *canvas = currentCanvas())
+                        canvas->setMaskPreview(canvas->maskPreview() == CanvasView::MaskPreview::Grayscale
+                                                   ? CanvasView::MaskPreview::None
+                                                   : CanvasView::MaskPreview::Grayscale);
+                }
+            } else if (auto *canvas = currentCanvas())
+                canvas->setMaskPreview(CanvasView::MaskPreview::None);
             refreshProperties();
         }
         Q_UNUSED(item);
@@ -961,12 +925,39 @@ void MainWindow::buildLayers(QWidget *parent) {
     };
     m_layers->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_layers, &QWidget::customContextMenuRequested, this, [this](QPoint p) {
+        if (auto *item = m_layers->itemAt(p))
+            if (auto *document = currentDocument())
+                document->setActiveIndex(document->indexForId(item->data(1, Qt::UserRole).toULongLong()));
         QMenu menu;
         for (const auto &s :
              QStringList{"Duplicate Layer", "Delete Layer", "Rename Layer...", "Convert to Smart Object",
                          "Rasterize Layer", "Merge Down", "Merge Visible", "Flatten Image",
                          "Create Clipping Mask", "New Selection from Layer", "Layer Style..."})
             menu.addAction(s, [this, s] { runCommand(s); });
+        auto *masks = menu.addMenu("Layer Mask");
+        for (const QString &name :
+             QStringList{"Add Layer Mask", "Toggle Layer Mask", "Invert Layer Mask",
+                         "Load Selection from Layer Mask", "Apply Layer Mask", "Delete Layer Mask"})
+            masks->addAction(name, [this, name] { runCommand(name); });
+        masks->addSeparator();
+        masks->addAction("Show mask grayscale", [this] {
+            if (auto *canvas = currentCanvas())
+                canvas->setMaskPreview(CanvasView::MaskPreview::Grayscale);
+        });
+        masks->addAction("Show mask overlay", [this] {
+            if (auto *canvas = currentCanvas())
+                canvas->setMaskPreview(CanvasView::MaskPreview::Overlay);
+        });
+        masks->addAction("Hide mask preview", [this] {
+            if (auto *canvas = currentCanvas())
+                canvas->setMaskPreview(CanvasView::MaskPreview::None);
+        });
+        auto *vectors = menu.addMenu("Vector Mask");
+        for (const QString &name :
+             QStringList{"Add Vector Mask", "Toggle Vector Mask", "Load Selection from Vector Mask",
+                         "Apply Vector Mask", "Delete Vector Mask"})
+            vectors->addAction(name, [this, name] { runCommand(name); });
+        menu.addAction("Edit Smart Filters...", [this] { runCommand("Edit Smart Filters..."); });
         menu.exec(m_layers->mapToGlobal(p));
     });
     connect(m_blend, &QComboBox::currentTextChanged, this, [this](const QString &s) {
@@ -1120,8 +1111,27 @@ void MainWindow::buildDocks() {
     m_docks["Layers"]->raise();
     m_properties = new QWidget;
     new QVBoxLayout(m_properties);
-    dock("Properties", m_properties, true);
+    auto *propertiesScroll = new QScrollArea;
+    propertiesScroll->setWidgetResizable(true);
+    propertiesScroll->setFrameShape(QFrame::NoFrame);
+    propertiesScroll->setWidget(m_properties);
+    dock("Properties", propertiesScroll, true);
     m_history = new QListWidget;
+    m_history->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_history->setToolTip("Click to restore a state. Right-click to choose the History Brush source.");
+    connect(m_history, &QWidget::customContextMenuRequested, this, [this](const QPoint &position) {
+        auto *item = m_history->itemAt(position);
+        auto *canvas = currentCanvas();
+        if (!item || !canvas)
+            return;
+        const int sourceIndex = m_history->row(item) - 1;
+        QMenu menu(this);
+        menu.addAction("Use as History Brush source", this, [this, canvas, sourceIndex] {
+            canvas->setProperty("historySourceIndex", sourceIndex);
+            showMessage("History Brush source selected.");
+        });
+        menu.exec(m_history->viewport()->mapToGlobal(position));
+    });
     dock("History", m_history);
     connect(m_history, &QListWidget::itemClicked, this, [this](QListWidgetItem *i) {
         auto *d = currentDocument();
@@ -1277,26 +1287,23 @@ void MainWindow::buildDocks() {
     auto *comps = new QWidget;
     auto *cv = new QVBoxLayout(comps);
     auto *list = new QListWidget;
+    list->setObjectName("layerCompsList");
     cv->addWidget(list);
-    cv->addWidget(button("Capture visibility", comps, [this, list] {
+    cv->addWidget(button("Capture layer comp", comps, [this, list] {
         auto *d = currentDocument();
         if (!d)
             return;
-        QJsonArray visible;
-        for (const auto &l : d->state.layers)
-            visible.append(l.visible);
-        auto *i = new QListWidgetItem("Comp " + QString::number(list->count() + 1), list);
-        i->setData(Qt::UserRole, QJsonDocument(visible).toJson(QJsonDocument::Compact));
+        d->captureLayerComp("Comp " + QString::number(list->count() + 1));
+        refresh();
     }));
-    connect(list, &QListWidget::itemClicked, this, [this](QListWidgetItem *i) {
-        auto *d = currentDocument();
-        if (!d)
-            return;
-        auto arr = QJsonDocument::fromJson(i->data(Qt::UserRole).toByteArray()).array();
-        d->mutate("Layer comp", [d, arr] {
-            for (int j = 0; j < std::min(d->state.layers.size(), arr.size()); j++)
-                d->state.layers[j].visible = arr[j].toBool();
-        });
+    cv->addWidget(button("Delete selected comp", comps, [this, list] {
+        if (auto *d = currentDocument())
+            if (list->currentRow() >= 0)
+                d->deleteLayerComp(list->currentRow());
+    }));
+    connect(list, &QListWidget::itemClicked, this, [this, list](QListWidgetItem *i) {
+        if (auto *d = currentDocument())
+            d->applyLayerComp(list->row(i));
     });
     dock("Layer Comps", comps);
     auto *timeline = new QWidget;
@@ -1378,6 +1385,9 @@ void MainWindow::buildDocks() {
 }
 void MainWindow::selectTool(const QString &tool) {
     m_tool = tool;
+    for (const auto &group : ShortcutRegistry::toolGroups())
+        if (group.second.contains(tool))
+            m_lastToolInGroup[group.first] = tool;
     for (auto *b : m_tools)
         b->setChecked(false);
     if (m_tools.contains(tool))
@@ -1402,9 +1412,12 @@ void MainWindow::selectTool(const QString &tool) {
             action->setVisible(tool == "Move" || tool == "Artboard");
         if (action->property("typeOption").toBool())
             action->setVisible(type);
+        if (action->property("cropOption").toBool())
+            action->setVisible(tool == "Crop" || tool == "Perspective Crop");
     }
     if (auto *c = currentCanvas()) {
         c->setTool(tool);
+        c->setProperty("brushBlendMode", m_options->findChild<QComboBox *>("brushMode")->currentText());
         c->setForeground(m_foreground);
         c->setBackground(m_background);
         c->setBrushSize(m_options->findChild<QSpinBox *>("brushSize")->value());
@@ -1416,6 +1429,7 @@ void MainWindow::selectTool(const QString &tool) {
                        m_options->findChild<QCheckBox *>("showTransformControls")->isChecked());
         c->setProperty("typeFont", m_options->findChild<QFontComboBox *>("typeFont")->currentFont());
         c->setProperty("typeSize", m_options->findChild<QSpinBox *>("typeSize")->value());
+        applyCropOptions();
     }
     if (m_fgSwatch) {
         m_fgSwatch->setText(m_foreground.name().toUpper());
@@ -1430,6 +1444,28 @@ void MainWindow::addDocument(Document *document) {
     v->setSpacing(0);
     auto *canvas = new CanvasView(document, page);
     canvas->setObjectName("canvas");
+    canvas->setProperty("externalShortcuts", true);
+    connect(canvas, &CanvasView::cropSettingsChanged, this, [this, canvas] {
+        if (canvas != currentCanvas())
+            return;
+        if (auto *overlay = m_options->findChild<QComboBox *>("cropOverlay")) {
+            QSignalBlocker block(overlay);
+            overlay->setCurrentText(canvas->cropSettings().overlay);
+        }
+    });
+    connect(canvas, &CanvasView::brushSettingsChanged, this, [this, canvas] {
+        if (canvas != currentCanvas())
+            return;
+        const QHash<QString, int> values{{"brushSize", canvas->brushSize()},
+                                         {"hardness", qRound(canvas->brushHardness() * 100)},
+                                         {"brushOpacity", qRound(canvas->brushOpacity() * 100)},
+                                         {"flow", qRound(canvas->brushFlow() * 100)}};
+        for (auto it = values.cbegin(); it != values.cend(); ++it)
+            if (auto *spin = m_options->findChild<QSpinBox *>(it.key())) {
+                QSignalBlocker block(spin);
+                spin->setValue(it.value());
+            }
+    });
     v->addWidget(canvas, 1);
     auto *status = new QWidget;
     status->setFixedHeight(24);
@@ -1527,6 +1563,18 @@ void MainWindow::addDocument(Document *document) {
     update();
 }
 void MainWindow::refreshLayers() {
+    QHash<quint64, bool> expanded;
+    QSet<quint64> selected;
+    std::function<void(QTreeWidgetItem *)> remember = [&](QTreeWidgetItem *item) {
+        quint64 id = item->data(1, Qt::UserRole).toULongLong();
+        expanded[id] = item->isExpanded();
+        if (item->isSelected())
+            selected.insert(id);
+        for (int child = 0; child < item->childCount(); ++child)
+            remember(item->child(child));
+    };
+    for (int index = 0; index < m_layers->topLevelItemCount(); ++index)
+        remember(m_layers->topLevelItem(index));
     m_layers->clear();
     auto *d = currentDocument();
     if (!d)
@@ -1575,7 +1623,8 @@ void MainWindow::refreshLayers() {
             item->setIcon(
                 2, QPixmap::fromImage(l.mask.scaled(38, 28, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
         item->setToolTip(2, l.maskTarget ? "Layer mask targeted" : "Click to paint on the layer mask");
-        item->setExpanded(true);
+        item->setExpanded(expanded.value(l.id, true));
+        item->setSelected(selected.contains(l.id));
         if (i == d->state.activeIndex)
             active = item;
     }
@@ -1586,10 +1635,12 @@ void MainWindow::refreshLayers() {
             items[layer.parentId]->addChild(item);
         else
             m_layers->addTopLevelItem(item);
-        item->setExpanded(true);
+        item->setExpanded(expanded.value(layer.id, true));
     }
-    if (active)
-        m_layers->setCurrentItem(active);
+    if (active) {
+        m_layers->setCurrentItem(active, 1, QItemSelectionModel::NoUpdate);
+        active->setSelected(true);
+    }
     if (auto *l = d->activeLayer()) {
         if (l->kind == LayerKind::Group || l->kind == LayerKind::Artboard) {
             if (m_blend->findText("Pass Through") < 0)
@@ -1644,20 +1695,12 @@ void MainWindow::refreshProperties() {
         layout->addWidget(new QLabel(QString("%1 · %2 px").arg(l->font.family()).arg(l->font.pixelSize())));
         layout->addWidget(button("Edit text...", m_properties, [this] { runCommand("Edit Text..."); }));
     }
-    if (!l->mask.isNull()) {
-        auto *target = new QCheckBox("Paint on layer mask");
-        target->setChecked(l->maskTarget);
-        connect(target, &QCheckBox::toggled, this, [d](bool on) {
-            if (auto *layer = d->activeLayer()) {
-                layer->maskTarget = on;
-                d->touch();
-            }
-        });
-        layout->addWidget(target);
-        layout->addWidget(button(l->maskEnabled ? "Disable mask" : "Enable mask", m_properties, [d] {
-            d->mutate("Toggle mask", [d] { d->activeLayer()->maskEnabled = !d->activeLayer()->maskEnabled; });
-        }));
-    }
+    if (!l->mask.isNull())
+        addMaskProperties(d, l->id, false);
+    if (!l->vectorMask.isEmpty())
+        addMaskProperties(d, l->id, true);
+    if (!l->smartFilters.isEmpty())
+        addSmartFilterProperties(d, l->id);
     layout->addWidget(button("Transform...", m_properties, [this] { transformDialog(); }));
     qobject_cast<QVBoxLayout *>(layout)->addStretch();
 }
@@ -1688,6 +1731,14 @@ void MainWindow::refresh() {
         m_commands["Redo"]->setEnabled(d && d->canRedo());
     refreshLayers();
     refreshProperties();
+    if (auto *list = m_docks["Layer Comps"]->widget()->findChild<QListWidget *>("layerCompsList")) {
+        int selected = list->currentRow();
+        list->clear();
+        if (d)
+            for (const auto &value : d->layerComps())
+                list->addItem(value.toObject().value("name").toString());
+        list->setCurrentRow(selected);
+    }
     m_history->clear();
     if (d) {
         auto names = d->historyNames();
