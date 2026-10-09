@@ -1,3 +1,4 @@
+#include "io/EmbeddedDocument.h"
 #include "io/FormatInternal.h"
 #include "io/LayerExtras.h"
 #include <QBuffer>
@@ -212,6 +213,12 @@ bool writeNative(const Document *doc, const QString &path, QString *error) {
             *error = "Invalid document dimensions.";
         return false;
     }
+    for (const auto &layer : doc->state.layers)
+        if (!layer.embeddedDocument.isEmpty() && !validEmbeddedDocument(layer.embeddedDocument)) {
+            if (error)
+                *error = "Invalid embedded native contents on layer “" + layer.name + "”.";
+            return false;
+        }
     QSaveFile f(path);
     f.setDirectWriteFallback(false);
     if (!f.open(QIODevice::WriteOnly)) {
@@ -237,6 +244,11 @@ bool writeNative(const Document *doc, const QString &path, QString *error) {
     head["layers"] = layers;
     head["guides"] = guides;
     QByteArray json = QJsonDocument(head).toJson(QJsonDocument::Compact);
+    if (json.size() > 16 * 1024 * 1024) {
+        if (error)
+            *error = "Native layer metadata exceed the 16 MB header limit.";
+        return false;
+    }
     QDataStream s(&f);
     configure(s);
     s.writeRawData("SPE\0", 4);
@@ -259,6 +271,14 @@ bool writeNative(const Document *doc, const QString &path, QString *error) {
             configure(ps);
             ps << l.id << l.shape;
             chunk(s, "PATH", p);
+        }
+        if (!l.embeddedDocument.isEmpty()) {
+            QByteArray payload;
+            QDataStream embedded(&payload, QIODevice::WriteOnly);
+            configure(embedded);
+            embedded << l.id;
+            embedded.writeRawData(l.embeddedDocument.constData(), l.embeddedDocument.size());
+            chunk(s, "SOBD", payload);
         }
     }
     if (!doc->state.selection.isNull())
@@ -338,7 +358,8 @@ Document *readNative(const QString &path, QString *error, QObject *parent) {
         if (!validExtras)
             return fail("Invalid native mask or smart-object metadata.");
         if (l.id == 0 || indices.contains(l.id) || int(l.kind) < 0 ||
-            int(l.kind) > int(LayerKind::Artboard) || (!l.pixels.size.isEmpty() && !validSize(l.pixels.size)))
+            int(l.kind) > int(LayerKind::PatternFill) ||
+            (!l.pixels.size.isEmpty() && !validSize(l.pixels.size)))
             return fail("Invalid or duplicate SPE layer.");
         indices.insert(l.id, doc->state.layers.size());
         doc->state.layers.append(l);
@@ -356,6 +377,8 @@ Document *readNative(const QString &path, QString *error, QObject *parent) {
             return fail("Truncated SPE chunk header.");
         quint64 n;
         s >> n;
+        if (QByteArray(name, 4) == "SOBD" && (n <= 8 || n > quint64(MaxEmbeddedDocumentBytes) + 8))
+            return fail("Invalid SPE embedded contents length.");
         if (n > MaxChunk || n > quint64(qMax<qint64>(0, f.bytesAvailable() - 4)))
             return fail("Invalid SPE chunk length.");
         QByteArray b = f.read(n);
@@ -402,6 +425,16 @@ Document *readNative(const QString &path, QString *error, QObject *parent) {
             if (ps.status() != QDataStream::Ok || !indices.contains(id))
                 return fail("Invalid SPE path.");
             doc->state.layers[indices[id]].shape = shape;
+        } else if (type == "SOBD") {
+            if (b.size() <= 8 || b.size() - 8 > MaxEmbeddedDocumentBytes)
+                return fail("Invalid SPE embedded contents length.");
+            const auto id = qFromLittleEndian<quint64>(b.constData());
+            if (!indices.contains(id) || !doc->state.layers[indices[id]].embeddedDocument.isEmpty())
+                return fail("Invalid or duplicate SPE embedded contents reference.");
+            const auto bytes = b.mid(8);
+            if (!validEmbeddedDocument(bytes))
+                return fail("Malformed SPE embedded contents.");
+            doc->state.layers[indices[id]].embeddedDocument = bytes;
         } else if (type == "META") {
             auto m = QJsonDocument::fromJson(b, &parse);
             if (parse.error != QJsonParseError::NoError || !m.isObject())

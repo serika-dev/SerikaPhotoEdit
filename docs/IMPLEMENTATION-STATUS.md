@@ -35,8 +35,10 @@ machine producing each package.
 
 [Earlier CI](https://github.com/serika-dev/SerikaPhotoEdit/actions/runs/37781612875) passed builds, offscreen tests, runtime staging and artifact uploads on Windows Server 2022, macOS 14 and Ubuntu 24.04. The [live validation record](https://github.com/serika-dev/SerikaPhotoEdit/blob/main/docs/RELEASE-VALIDATION.md) distinguishes completed automated package checks from full interactive desktop acceptance. Application source remains the immutable v0.0.1 tag; current packaging scripts overlay updated documentation and dependency notices. Bundled documentation records the state at packaging time.
 
-The viewport and compositor are CPU raster implementations. There is no QRhi,
-OpenGL or Vulkan compositor. Qt supplies the windowing, native dialog, IME and
+The viewport and layer compositor are CPU raster implementations. Optional OpenGL
+3.3 shader processing accelerates supported adjustments and separable Gaussian blur,
+with CPU fallback and device diagnostics; see [GPU processing](GPU-PROCESSING.md).
+This is not a full GPU layer compositor. Qt supplies the windowing, native dialog, IME and
 high-DPI infrastructure. Windows sets a DWM dark title bar. Jump lists, taskbar
 export progress, theme-aware DWM updates, macOS force-touch/ColorSync integration,
 and Linux portal/session behavior have not been implemented or verified as a
@@ -63,14 +65,14 @@ all display scales have not been established.
 
 | Panel or interaction | Behavior and limitations |
 | --- | --- |
-| Layers | Stable IDs, hierarchy, thumbnails, visibility, blend/opacity/fill, locks, raster/vector masks, clipping, layer operations, effects and Smart Filters. Mask thumbnails support load-selection modifiers, preview and disabling; masks have linked/unlinked positions. Complete kind/name/effect filtering and linked-layer workflows remain limited. |
+| Layers | Stable IDs, hierarchy, persistent multi-selection, thumbnails, visibility, blend/opacity/fill, locks, masks, clipping, effects and Smart Filters. Multi-select duplicate/delete/group/ungroup/order, hierarchy drops, six alignments and eight distribution modes operate atomically with undo. Alignment can reference layer bounds, canvas or pixel selection. Complete filtering and linked-layer sets remain limited. |
 | Properties / Adjustments | Context-dependent fields, parameterized adjustments, mask density/feather and editable Smart Filter stack. Some advanced operations expose a reduced set of controls. |
 | Color / Histogram / Navigator / Info | Functional color selection, histogram, navigation and canvas information. Info does not provide a separately color-managed proof readout. |
 | History | Executed-state list, undo/redo, purge and selectable History Brush source. History Brush restores native color and transparency from an available history state. There is no separate persistent snapshot browser. |
 | Channels / Paths | Basic lists and selection/path operations. Saved selections live in metadata; there is no independent full-depth extra-channel compositing model or complete clipping-path manager. |
-| Character / Paragraph / Glyphs | Font/size, text editing and selected glyph insertion. They are lightweight controls, not a complete typography system. |
-| Swatches / Gradients / Patterns / Styles / Brushes | Usable generated choices and basic brush/pattern definition. There is no full preset import/export, search, migration, organized library or brush-tip engine. |
-| Brush Settings | Basic shared brush controls. Advanced brush dynamics, textured tips, dual brush and a complete preset editor are absent. |
+| Character / Paragraph / Glyphs | Editable rich spans, font/style/color, tracking, kerning, baseline, paragraph alignment/leading/spacing/indents, point/paragraph type and text on paths. Shared layout drives rendering and outlines. See [typography](TYPOGRAPHY.md) for limits; full Adobe typography interchange remains absent. |
+| Swatches / Gradients / Patterns / Styles / Brushes | Generated choices and basic definitions remain in these panels. Brush Settings provides a persisted native JSON brush library. Gradient and pattern fill layers have dedicated editors. Adobe preset import, cross-library search/migration and a custom brush-tip engine remain absent. |
+| Brush Settings | Size, hardness, opacity, flow, spacing, angle, roundness, smoothing, jitter, scatter/count, pressure/tilt and stroke direction controls; preview and save/import/export of native presets. Fixed-distance sampling carries spacing between input events. Textured/sample tips, dual brushes, ABR compatibility and physical tablet acceptance are outstanding. |
 | Actions | Record supported editing commands, play and save/load parameterized action sets. See the action limitations below. |
 | Notes | Document metadata text editor. |
 | Layer Comps | Persistent records capture/restore visibility, position and appearance, with deletion and undo. Native files retain comps. There is no complete comp recapture/duplicate/export manager. |
@@ -95,9 +97,9 @@ Menus uses the shortcut editor rather than separate menu-visibility customizatio
 ## Document model, history and precision
 
 The model supports raster, group, artboard, text, shape, adjustment, solid-fill,
-gradient-fill and raster-backed smart-object layers. Groups can nest, IDs remain
-unique after import, and artboards have clipping rectangles and matte colors.
-There is no separate pattern-fill layer or video/frame layer model.
+gradient-fill, pattern-fill and Smart Object layers with retained native documents.
+Groups can nest, IDs remain unique after import, and artboards have clipping
+rectangles and matte colors. A separate video/frame layer model remains absent.
 
 Raster storage consists of sparse 256×256 copy-on-write `QImage` tiles. Empty tiles
 are omitted. Native storage supports 8-bit RGBA, 16-bit RGBA and 32-bit floating
@@ -154,8 +156,9 @@ pixel-for-pixel equivalence for every possible color, alpha, profile and advance
 blend configuration in another application.
 
 Levels, Curves and Hue/Saturation work as adjustment layers and destructive
-operations. Curves evaluates supplied control points with monotone interpolation;
-the UI offers simplified controls rather than a complete draggable curve editor.
+operations. Curves evaluates control points with monotone interpolation; its editor
+provides draggable RGB/master and individual channel curves, numeric input/output,
+keyboard point editing, histograms and saved native curve presets.
 Brightness/Contrast, Exposure, Vibrance, Color Balance, Black & White, Photo Filter,
 Channel Mixer, Color Lookup, Invert, Posterize, Threshold, Gradient Map, Selective
 Color, Shadows/Highlights, HDR Toning, Desaturate, Match Color, Replace Color,
@@ -181,17 +184,26 @@ checkerboard fallback. Effects are approximate CPU renderings.
 Qt shapes and text render as editable native layers. Type currently stores one
 font/color run with basic alignment/orientation. Rich runs, complete paragraph
 attributes, kerning controls, text-on-path, real text warp and Adobe type-engine
-descriptors are absent. Type-to-shape is available. Smart objects store raster
-pixels and an optional linked path. Original pixels are retained during matrix
-transforms, image resizing and Smart Filter edits, with reevaluated transform and
-filter records. An editable embedded `.spe` subdocument and comprehensive linked
-source reload manager remain absent.
+descriptors are absent. Type-to-shape is available. Smart Objects retain editable
+native subdocuments and cached pixels. Place Embedded/Linked, Edit Contents,
+Replace Contents, Relink, Update Linked, Embed Linked and Export Contents are
+implemented. Save in an embedded contents tab updates its parent with undo; linked
+contents Save also writes the original file, which parent undo cannot revert.
+Transforms, masks, offsets, effects and filters remain on the parent. Stale source
+changes and missing links report errors. Adobe-native Smart Object descriptors,
+automatic filesystem watching and a complete dependency packaging manager remain absent.
+
+Gradient Fill supports linear, radial, angle, reflected and diamond styles, color
+and opacity stops, reversal, angle and scale. Gradient Map shares the stop editor.
+Pattern Fill embeds a PNG tile with scale/angle controls; imported UI tiles are
+limited to 512 × 512 pixels. These fill layers retain editability in SPE and in
+Serika's private PSD state; external PSD readers receive compatibility pixels.
 
 ## Canvas tools
 
 | Tool family | Implemented behavior and limits |
 | --- | --- |
-| Move / Artboard | Layer movement, auto-select, transform-control display and basic artboard creation. Advanced multi-layer alignment/distribution needs further work. |
+| Move / Artboard | Multi-layer drag/nudge, auto-select preserving selected members, transform-control display and basic artboard creation. Alignment/distribution, grouping and ordering use content bounds and preserve hierarchy. A gesture is undoable/cancelable as a unit and keeps unlinked masks in place; targeting a single unlinked mask moves that mask. Free Transform still targets the active layer/group; photo registration is absent. |
 | Marquee / Lasso / selection tools | Rectangle, ellipse, row/column, free lasso, polygonal/magnetic lasso, wand, quick/object selections and selection boolean modifiers. Object/Subject selection uses a local color model, not semantic object recognition. |
 | Brush / Pencil / Erasers | Native selection/mask clipping, one gesture per undo, hardness/opacity/flow, spacing, angle/roundness, smoothing, HUD sizing, brush blends including Behind/Clear and Shift straight strokes. Alt samples without painting; temporary Move/Hand preserves the selected tool. Tablet pressure/tilt paths need physical device validation. |
 | Clone / Pattern / History | Clone sampling, patterns and chosen History-state painting, including native channels and transparency. Art History Brush is a simplified variation without a complete artistic stroke engine. |
@@ -248,9 +260,12 @@ from the brief are not validated.
 
 ICC bytes are retained and embedded where the writer supports them. Qt
 `QColorSpace` performs the implemented RGB profile conversions, including Develop
-sRGB, Display P3, Adobe RGB compatible and ProPhoto RGB output. There is no
-dedicated Little CMS 2 pipeline with explicit black-point compensation, complete
-CMYK/Lab editing, soft proof or gamut warning. Bitmap/Grayscale/Indexed menu paths
+sRGB, Display P3, Adobe RGB compatible and ProPhoto RGB output. LittleCMS adds
+real ICC CMYK soft proofing, rendering intents, black-point compensation, paper
+simulation, gamut warning, 8/16-bit CMYK TIFF and separate ink exports. Printer
+profiles and proof settings travel in native metadata. The editable pixel model
+remains RGB; native CMYK/Lab layer editing and spot colors are absent. See
+[color management](COLOR-MANAGEMENT.md). Bitmap/Grayscale/Indexed menu paths
 use RGB effects while storage remains RGBA; they are not native indexed/1-bit
 document modes. Profile assignment does not by itself convert existing samples.
 
@@ -300,15 +315,22 @@ gestures or every menu item; insert-stop/menu-item editing, complete open/save
 overrides and a general scripting API are absent. Fade blends the immediately
 preceding pixel effect against its before-state using the requested amount in
 Normal mode, retains layer opacity, and creates one undo step. Effects that change
-dimensions and non-pixel edits cannot be faded. Auto-Align is a translation-only
-centering operation, not image registration.
+dimensions and non-pixel edits cannot be faded. Auto-Align centers selected layer
+content on the canvas and explicitly reports that photo registration is absent.
 
 Preference pages exist, with functional theme, Home, recovery, history, export,
 linear blending and selected unit/grid settings. Several pages are lightweight
 information controls. Memory percentage and scratch-folder controls do not create
-an enforced memory budget or disk-backed tile cache; there is no GPU or adjustable
-cache hierarchy. There is no complete plug-in discovery/installation system.
+an enforced memory budget or disk-backed tile cache. GPU image processing is
+opt-in with visible device/fallback diagnostics; there is no adjustable tile-cache hierarchy. There is no complete plug-in discovery/installation system.
 Unimplemented commands report their status instead of silently succeeding.
+
+## Local MCP automation
+
+The executable exposes a local stdio MCP server with isolated documents, bounded
+workspace access, previews, editable layers/text/fills, native saves, exports,
+atomic action playback and undo/redo. It has no network listener and does not
+remote-control GUI tabs. See [MCP setup and limits](MCP-SERVER.md).
 
 ## Verification and remaining acceptance work
 
@@ -328,6 +350,11 @@ reports them, and should not be interpreted as a count of complete features.
 | [shortcuts_tests.cpp](../tests/shortcuts_tests.cpp) | Stable IDs/default table, conflicts, JSON persistence, text inputs, remapping, multi-key chords, tool/crop scopes, blend/opacity/flow and press/release holds. |
 | [mask_tests.cpp](../tests/mask_tests.cpp) | Native coverage precision, density/feather, vector/raster composition, linking, saved selections, comps, Smart Filters and retained history pixels. |
 | [workflow_tests.cpp](../tests/workflow_tests.cpp) | Actual command workflows, native transforms/mask targeting, crop/refinement/Smart Filter dialogs, clipboard and document-state operations. |
+| [layer_operations_tests.cpp](../tests/layer_operations_tests.cpp) | Native content bounds, all distribution modes, alignment references, nested groups, masks, locks, order/drop validation, atomic undo and actual multi-selection UI workflows. |
+| [smartobject_tests.cpp](../tests/smartobject_tests.cpp) | Embedded and linked lifecycle, replacement, source precision, retained parent properties, native/PSD payload round-trips, invalid payloads and contents-tab Save behavior. |
+| [brush_tests.cpp](../tests/brush_tests.cpp) | Fixed-distance sampling, pressure interpolation, deterministic jitter/scatter, preset persistence, selection clipping, native strokes/undo/cancel; multi-layer drag/nudge and mask/lock handling; toolbar/preset/new-document synchronization. |
+| [curves_tests.cpp](../tests/curves_tests.cpp) | Per-channel edits, point gestures/keyboard controls and parameter preservation. |
+| [fills_tests.cpp](../tests/fills_tests.cpp) | Five gradient styles, intermediate stops/alpha, native depth, pattern repetition, SPE/PSD round-trips and actual fill create/edit/cancel/undo commands. |
 | [performance_bench.cpp](../tests/performance_bench.cpp) | Standalone 4000×3000 ten-layer cold composite, cached access, zoom resampling, brush dirty-region redraw and undo timings; JSON output. It measures current behavior and does not enforce unverified brief latency claims. |
 
 The raster compositor cache supports dirty-tile regional recomposition during

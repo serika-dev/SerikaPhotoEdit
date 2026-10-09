@@ -54,6 +54,15 @@ match = re.search(r'project\(SerikaPhotoEdit\s+VERSION\s+([0-9.]+)',
 if not match:
     raise SystemExit('Cannot determine the application version from SOURCE_DIR.')
 version = match.group(1)
+# Packaging tooling can be newer than SOURCE_DIR's immutable release tag.
+if (source / 'resources/icons/serika-photoedit.png').is_file():
+    source_icon = source / 'resources/icons/serika-photoedit.png'
+    icon_relative = 'share/icons/hicolor/512x512/apps/serika-photoedit.png'
+else:
+    source_icon = source / 'resources/icons/serika-photoedit.svg'
+    icon_relative = 'share/icons/hicolor/scalable/apps/serika-photoedit.svg'
+if not source_icon.is_file():
+    raise SystemExit(f'Missing application icon in SOURCE_DIR: {source_icon}')
 tool = os.environ.get('APPIMAGETOOL')
 runtime = os.environ.get('APPIMAGE_RUNTIME')
 if bool(tool) != bool(runtime):
@@ -351,7 +360,7 @@ shutil.copytree(bundle, payload, symlinks=True)
 os.symlink('../../opt/serika-photoedit/SerikaPhotoEdit', deb_root / 'usr/bin/SerikaPhotoEdit')
 for relative in ('share/applications/io.serika.PhotoEdit.desktop',
                  'share/mime/packages/io.serika.PhotoEdit.xml',
-                 'share/icons/hicolor/scalable/apps/serika-photoedit.svg'):
+                 icon_relative):
     target = deb_root / 'usr' / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(bundle / relative, target)
@@ -384,8 +393,8 @@ exec "$root/usr/SerikaPhotoEdit" "$@"
 ''')
     (appdir / 'AppRun').chmod(0o755)
     shutil.copy2(source / 'packaging/linux/io.serika.PhotoEdit.desktop', appdir)
-    shutil.copy2(source / 'resources/icons/serika-photoedit.svg', appdir)
-    os.symlink('serika-photoedit.svg', appdir / '.DirIcon')
+    shutil.copy2(source_icon, appdir)
+    os.symlink(source_icon.name, appdir / '.DirIcon')
     appimage = output / f'{stem}.AppImage'
     tool_env = dict(os.environ, ARCH=arch, APPIMAGE_EXTRACT_AND_RUN='1')
     run([Path(tool).resolve(strict=True), '--runtime-file', Path(runtime).resolve(strict=True),

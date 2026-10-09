@@ -6,7 +6,9 @@ Linux/macOS packages use the same Qt 6.8.3 source notices, plus notices for the 
 
 | Library | Prepared version | License/source |
 | --- | --- | --- |
+| Outfit and Onest fonts | Bundled variable font files | SIL Open Font License 1.1; [Outfit source](https://github.com/google/fonts/tree/main/ofl/outfit), [Onest source](https://github.com/google/fonts/tree/main/ofl/onest); matching `Outfit-OFL.txt` and `Onest-OFL.txt` are included with the application |
 | Qt, Qt SVG, Qt Image Formats, Qt PDF | 6.8.3 | LGPL-3.0 and associated third-party terms; [exact-version Qt sources](https://download.qt.io/archive/qt/6.8/6.8.3/single/) and [Qt licensing](https://doc.qt.io/qt-6/licensing.html) |
+| LittleCMS (current source) | 2.19.1 Windows; system package on Linux/macOS | MIT; [official source](https://github.com/mm2/Little-CMS/tree/lcms2.19.1); `LittleCMS2.txt` bundled. Real ICC proofing/separations backend; independent of Qt PDF's copy |
 | LibRaw | 0.22.2 | LGPL-2.1/CDDL-1.0; [LibRaw sources](https://www.libraw.org/download) |
 | zlib | 1.3.1 | zlib license; [source](https://zlib.net/fossils/zlib-1.3.1.tar.gz) |
 | MinGW GCC runtime | GCC 13.1 | GPL-3.0 with GCC Runtime Library Exception; [GCC sources](https://gcc.gnu.org/releases.html) |

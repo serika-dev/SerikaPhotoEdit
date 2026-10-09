@@ -76,7 +76,7 @@ class TransformDialog::Preview : public QWidget {
         QPolygonF screen;
         for (auto q : quad)
             screen << toView(q);
-        p.setPen(QPen(QColor("#e8893a"), 1));
+        p.setPen(QPen(palette().color(QPalette::Highlight), 1));
         p.setBrush(Qt::NoBrush);
         p.drawPolygon(screen);
         for (auto q : screen) {
@@ -87,7 +87,7 @@ class TransformDialog::Preview : public QWidget {
         const auto knob = toView(rotationKnob());
         p.setPen(Qt::white);
         p.drawLine(toView((quad[0] + quad[1]) / 2), knob);
-        p.setBrush(QColor("#e8893a"));
+        p.setBrush(palette().color(QPalette::Highlight));
         p.drawEllipse(knob, 5, 5);
     }
     void mousePressEvent(QMouseEvent *e) override {

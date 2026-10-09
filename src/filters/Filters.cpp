@@ -1,3 +1,4 @@
+#include "compositor/GpuProcessor.h"
 #include "io/FormatIO.h"
 #include <QColorSpace>
 #include <QJsonArray>
@@ -235,6 +236,8 @@ float noise(double x, double y, quint32 seed) {
 } // namespace
 
 QImage applyFilter(const QImage &source, const QString &name, const QJsonObject &parameters) {
+    if (const auto gpu = GpuProcessor::instance().processFilter(source, name, parameters); gpu.usedGpu)
+        return gpu.image;
     if (source.isNull())
         return {};
     Image input(source), out = input;

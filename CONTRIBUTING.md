@@ -14,6 +14,7 @@ Check [implementation status](docs/IMPLEMENTATION-STATUS.md) and [format fidelit
 - Qt 6.8+ desktop kit: Core, Gui, Widgets, PrintSupport, Svg and Test.
 - Optional Qt Image Formats plugins for additional codecs and Qt Pdf for PDF import.
 - Optional dynamically linked LibRaw and zlib development packages for RAW and compression support.
+- LittleCMS2 for ICC CMYK proofing/export; `SERIKA_REQUIRE_CMYK=ON` requires this dependency. Qt OpenGL enables the optional GPU processor (`SERIKA_WITH_GPU=OFF` disables it).
 
 The locally verified Windows kit is Qt 6.8.3 with MinGW GCC 13.1 x64, LibRaw 0.22.2 and zlib 1.3.1. Qt, compiler and library ABIs must match. Install tools independently; the ignored `.tools` directory is not part of the source download. Disabling optional dependencies changes the available features and which tests can run.
 
@@ -38,7 +39,7 @@ ctest --test-dir build --output-on-failure
 
 For MSVC, use the matching Qt MSVC kit from a Visual Studio developer shell and omit `-DCMAKE_CXX_COMPILER=g++`. That compiler route has not been validated locally for this release. Use a fresh build directory when changing kits or compilers.
 
-Add an optional dependency prefix to `CMAKE_PREFIX_PATH` with a semicolon-separated list, or provide `LIBRAW_INCLUDE_DIR`, `LIBRAW_LIBRARY` and CMake's zlib variables explicitly. For a build without RAW discovery, add `-DSERIKA_WITH_RAW=OFF`.
+Add an optional dependency prefix to `CMAKE_PREFIX_PATH` with a semicolon-separated list, or provide `LIBRAW_INCLUDE_DIR`, `LIBRAW_LIBRARY` and CMake's zlib variables explicitly. For a build without RAW discovery, add `-DSERIKA_WITH_RAW=OFF`. `scripts/build-lcms.ps1` builds the pinned MIT LittleCMS2 core with the compiler on PATH; add `.tools/deps/install` to `CMAKE_PREFIX_PATH` and its `bin` directory to PATH.
 
 The Windows convenience script also accepts an external SDK:
 
@@ -56,7 +57,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Alternatively, `./scripts/build-unix.sh -DCMAKE_PREFIX_PATH=/path/to/Qt/kit` configures, builds and tests. Debian-family package names include `libraw-dev`, `zlib1g-dev`, `cmake`, `ninja-build` and `pkg-config`; Qt package names commonly include `qt6-base-dev`, `libqt6svg6-dev` and `qt6-image-formats-plugins`. A newer Qt SDK is required when distribution packages are below 6.8. On macOS, LibRaw and pkg-config can be installed through Homebrew. Universal macOS builds require universal Qt and third-party dependencies; they are not validated.
+Alternatively, `./scripts/build-unix.sh -DCMAKE_PREFIX_PATH=/path/to/Qt/kit` configures, builds and tests. Debian-family package names include `libraw-dev`, `liblcms2-dev`, `zlib1g-dev`, `cmake`, `ninja-build` and `pkg-config`; Qt package names commonly include `qt6-base-dev`, `libqt6svg6-dev` and `qt6-image-formats-plugins`. A newer Qt SDK is required when distribution packages are below 6.8. On macOS, `brew install libraw little-cms2 pkg-config` supplies those libraries. Universal macOS builds require universal Qt and third-party dependencies; they are not validated.
 
 For Qt 6.8.3, [aqt](https://aqtinstall.readthedocs.io/en/stable/cli.html) provides `linux_gcc_64` under host `linux`, `linux_gcc_arm64` under host `linux_arm64`, and the universal `clang_64` kit under host `mac`. Install `qtimageformats` and `qtpdf` to retain those release features. Native GitHub runner labels are `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel` and `macos-14` (Apple Silicon); see [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 
@@ -64,7 +65,7 @@ Select one native Mac target with `-DCMAKE_OSX_ARCHITECTURES=x86_64` or `arm64`.
 
 ## Test a change
 
-CTest runs eight QtTest suites on Qt's offscreen platform: `core`, `io`, `ui`, `canvas`, `actions`, `shortcuts`, `mask` and `workflow`. The verified Windows x64, Linux x86_64/aarch64 and macOS Intel/Apple Silicon 0.0.1 baseline is **227 passing checks** per target, including lifecycle slots and data rows, with all optional release dependencies present. Other dependency configurations may skip unsupported-format checks.
+Current source runs 17 QtTest suites on Qt's offscreen platform: the original `core`, `io`, `ui`, `canvas`, `actions`, `shortcuts`, `mask`, `workflow`, plus `curves`, `fills`, `brush`, `layer_operations`, `smartobject`, `gpu`, `color_management`, `typography` and `mcp`. The GPU suite explicitly skips shader checks when a hardware context is unavailable; separately run `gpu_tests -platform windows` with `SERIKA_REQUIRE_GPU=1` on a Windows graphics device to require actual shader execution. See [GPU testing](docs/GPU-PROCESSING.md). The verified Windows x64, Linux x86_64/aarch64 and macOS Intel/Apple Silicon 0.0.1 baseline is **227 passing checks** per target, including lifecycle slots and data rows, with all optional release dependencies present. Other dependency configurations may skip unsupported-format checks.
 
 ```sh
 ctest --test-dir build --output-on-failure

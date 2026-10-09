@@ -1,5 +1,6 @@
 #pragma once
 #include "document/Document.h"
+#include "tools/BrushDynamics.h"
 #include <QIcon>
 #include <QPolygonF>
 #include <QTimer>
@@ -32,6 +33,9 @@ class CanvasView : public QWidget {
     void setBrushAngle(qreal degrees);
     void setBrushRoundness(qreal roundness);
     void setBrushSmoothing(qreal smoothing);
+    BrushPreset brushPreset() const;
+    void setBrushPreset(const BrushPreset &preset);
+    void nudgeSelectedLayers(QPointF delta);
     void setShowRulers(bool enabled);
     void setShowGrid(bool enabled);
     void setShowGuides(bool enabled);
@@ -89,6 +93,7 @@ class CanvasView : public QWidget {
     void cropPreviewChanged(bool active);
     void cropSettingsChanged();
     void brushSettingsChanged();
+    void interactionError(const QString &error);
     void transformPreviewChanged(bool active);
 
   protected:
@@ -117,6 +122,9 @@ class CanvasView : public QWidget {
     qreal m_brushAngle = 0;
     qreal m_roundness = 1;
     qreal m_smoothing = 0;
+    BrushPreset m_brushPreset;
+    BrushDynamics m_brushDynamics;
+    QPointF m_tabletTilt;
     QHash<quint64, QImage> m_strokeCoverage;
     qreal m_zoom = 1;
     qreal m_rotation = 0;
@@ -134,9 +142,9 @@ class CanvasView : public QWidget {
     QPointF m_start;
     QPointF m_last;
     QPointF m_cursor;
-    QPointF m_initialOffset;
-    QHash<quint64, QPointF> m_initialMaskOffsets;
-    QHash<quint64, QPointF> m_initialVectorMaskOffsets;
+    QVector<quint64> m_moveLayerIds;
+    QPointF m_moveAppliedDelta;
+    bool m_moveMaskOnly = false;
     QPointF m_cloneSource;
     bool m_hasCloneSource = false;
     QImage m_strokeSource;
@@ -150,6 +158,11 @@ class CanvasView : public QWidget {
     bool m_moving = false;
     QPainterPath m_selectionOutline;
     QImage m_maskOverlay;
+    QImage m_proofPreview;
+    qint64 m_proofSourceKey = 0;
+    QJsonObject m_proofSettings;
+    QByteArray m_proofSourceIcc;
+    QImage proofPreview(const QImage &source);
     int m_guideDrag = 0;
     qreal m_guidePosition = 0;
     bool m_rotating = false;
@@ -185,6 +198,7 @@ class CanvasView : public QWidget {
     QImage m_transportMask;
     QImage m_transportPreview;
     QPointF m_transportDelta;
+    QPointF m_transportOrigin;
     QPointF m_lastStrokePoint;
     bool m_hasLastStrokePoint = false;
     int m_numericOpacity = -1;
@@ -205,8 +219,10 @@ class CanvasView : public QWidget {
     DocumentState m_transformState;
     QRectF m_transformBounds;
     QRectF activeLayerBounds() const;
-    void dab(QPointF point);
-    void drawStroke(QPointF from, QPointF to);
+    void dab(const BrushDab &sample);
+    void drawStroke(QPointF to);
+    QVector<quint64> selectedMoveRoots() const;
+    bool updateMove(QPointF point, Qt::KeyboardModifiers modifiers);
     void finishSelection();
     void applyGradient();
     void bucket(QPoint point);
@@ -228,5 +244,5 @@ class CanvasView : public QWidget {
     QTransform viewTransform() const;
 };
 QStringList toolNames();
-QIcon toolIcon(const QString &name, QColor color = QColor("#d4d4d4"));
+QIcon toolIcon(const QString &name, QColor color = QColor());
 } // namespace serika

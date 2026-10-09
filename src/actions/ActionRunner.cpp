@@ -1,4 +1,5 @@
 #include "ActionRunner.h"
+#include "document/SmartObjectOperations.h"
 #include "document/TransformOperations.h"
 #include "io/FormatIO.h"
 #include <QColorSpace>
@@ -151,6 +152,14 @@ bool ActionRunner::execute(Document *doc, const QJsonObject &step, QString *erro
     if (filters.contains(key)) {
         name = command;
         key = "filter";
+    }
+    if (key == "convert to smart object" || key == "convert for smart filters") {
+        const auto *layer = doc->activeLayer();
+        if (!layer)
+            return fail("Select a layer to convert.");
+        if (layer->kind == LayerKind::SmartObject)
+            return true;
+        return convertLayerToEmbeddedSmartObject(doc, layer->id, error);
     }
     if (key == "adjustment" && params.contains("destructive") && !params["destructive"].toBool()) {
         if (!adjustmentNames().contains(name))

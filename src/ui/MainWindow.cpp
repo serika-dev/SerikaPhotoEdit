@@ -1,7 +1,9 @@
 #include "MainWindow.h"
 #include "Theme.h"
 #include "actions/ActionRunner.h"
+#include "compositor/GpuProcessor.h"
 #include "io/FormatIO.h"
+#include "ui/panels/BrushSettingsWidget.h"
 #include "ui/panels/LayerTree.h"
 #include <QApplication>
 #include <QBoxLayout>
@@ -57,10 +59,15 @@ static QPushButton *button(const QString &text, QWidget *parent, const std::func
     QObject::connect(b, &QPushButton::clicked, parent, fn);
     return b;
 }
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_settings("Serika", "PhotoEdit") {
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent),
+      m_settings(QSettings::defaultFormat(), QSettings::UserScope, "Serika", "PhotoEdit") {
+    initializeBrandFonts();
+    GpuProcessor::instance().setEnabled(m_settings.value("gpuProcessing", false).toBool() ||
+                                        QCoreApplication::arguments().contains("--gpu"));
     setObjectName("SerikaPhotoEdit");
     setWindowTitle("Serika PhotoEdit");
-    setWindowIcon(QIcon(":/serika/icons/serika-photoedit.svg"));
+    setWindowIcon(QIcon(":/serika/logo.png"));
     resize(1600, 1000);
     setMinimumSize(1100, 700);
     setAcceptDrops(true);
@@ -153,6 +160,8 @@ void MainWindow::buildMenus() {
     command(file, "Save a Copy...");
     auto *exportMenu = file->addMenu("Export");
     command(exportMenu, "Export As...", QKeySequence("Ctrl+Alt+Shift+S"));
+    command(exportMenu, "Export CMYK TIFF...");
+    command(exportMenu, "Export CMYK Separations...");
     command(exportMenu, "Quick Export PNG");
     command(exportMenu, "Export Layers...");
     auto *generate = file->addMenu("Generate");
@@ -252,6 +261,7 @@ void MainWindow::buildMenus() {
     command(fill, "Solid Color...");
     command(fill, "Gradient Fill...");
     command(fill, "Pattern Fill...");
+    command(fill, "Edit Fill...");
     layer->addSeparator();
     command(layer, "Layer Style...");
     command(layer, "Add Layer Mask");
@@ -260,9 +270,12 @@ void MainWindow::buildMenus() {
     command(layer, "Create Clipping Mask", QKeySequence("Ctrl+Alt+G"));
     command(layer, "Group Layers", QKeySequence("Ctrl+G"));
     command(layer, "Ungroup Layers", QKeySequence("Ctrl+Shift+G"));
-    command(layer, "Convert to Smart Object");
     command(layer, "Rasterize Layer");
-    command(layer, "Update Linked Content");
+    auto *smartObjects = layer->addMenu("Smart Objects");
+    for (const auto &name : QStringList{"Convert to Smart Object", "Edit Contents...", "Replace Contents...",
+                                        "Relink to File...", "Update Linked Content", "Embed Linked",
+                                        "Export Contents...", "Edit Smart Filters..."})
+        command(smartObjects, name);
     auto *arrange = layer->addMenu("Arrange");
     command(arrange, "Bring Forward", QKeySequence("Ctrl+]"));
     command(arrange, "Send Backward", QKeySequence("Ctrl+["));
@@ -277,6 +290,10 @@ void MainWindow::buildMenus() {
     for (const auto &s : QStringList{"Character", "Paragraph", "Glyphs"})
         command(type, s);
     command(type, "Edit Text...");
+    command(type, "Edit Typography...");
+    command(type, "Convert to Paragraph Text");
+    command(type, "Type on Path...");
+    command(type, "Clear Type Path");
     command(type, "Convert to Shape");
     command(type, "Convert to Point Text");
     command(type, "Warp Text...");
@@ -328,8 +345,9 @@ void MainWindow::buildMenus() {
     auto *threeD = menuBar()->addMenu("3D");
     command(threeD, "3D Workspace Information");
     auto *view = menuBar()->addMenu("View");
-    command(view, "Proof Colors");
-    command(view, "Gamut Warning");
+    command(view, "Proof Setup...");
+    command(view, "Proof Colors")->setCheckable(true);
+    command(view, "Gamut Warning")->setCheckable(true);
     command(view, "Zoom In", QKeySequence("Ctrl++"));
     command(view, "Zoom Out", QKeySequence("Ctrl+-"));
     command(view, "Fit on Screen", QKeySequence("Ctrl+0"));
@@ -360,8 +378,10 @@ void MainWindow::buildMenus() {
     command(help, "Welcome Project");
     command(help, "Keyboard Reference");
     command(help, "Format Support");
+    command(help, "GPU Diagnostics");
     command(help, "About Serika PhotoEdit");
     command(help, "Command Palette...", QKeySequence("Ctrl+Shift+P"));
+    initializeLayerOperations();
 }
 void MainWindow::buildHome() {
     m_home = new QWidget(this);
@@ -370,77 +390,112 @@ void MainWindow::buildHome() {
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
     auto *rail = new QWidget;
-    rail->setFixedWidth(190);
+    rail->setObjectName("homeRail");
+    rail->setFixedWidth(200);
     auto *rl = new QVBoxLayout(rail);
-    rl->setContentsMargins(24, 35, 22, 25);
-    auto *mark = new QLabel;
-    mark->setPixmap(QIcon(":/serika/icons/serika-photoedit.svg").pixmap(56, 56));
-    rl->addWidget(mark);
-    rl->addSpacing(12);
-    auto *brand = new QLabel("SERIKA\nPHOTOEDIT");
-    brand->setStyleSheet("font-size:16px;font-weight:600;letter-spacing:2px;");
+    rl->setContentsMargins(24, 36, 24, 28);
+    rl->setSpacing(8);
+    auto *brand = new QLabel("serika");
+    brand->setObjectName("homeBrand");
     rl->addWidget(brand);
-    rl->addSpacing(30);
-    rl->addWidget(button("Home", rail, [this] { m_center->setCurrentWidget(m_home); }));
-    rl->addWidget(button("Learn", rail, [this] { runCommand("Keyboard Reference"); }));
-    rl->addWidget(button("Your files", rail, [this] { runCommand("Open..."); }));
+    auto *product = new QLabel("PhotoEdit");
+    product->setObjectName("homeProduct");
+    rl->addWidget(product);
+    rl->addSpacing(36);
+    auto *home = button("Home", rail, [this] { m_center->setCurrentWidget(m_home); });
+    home->setObjectName("homeNav");
+    home->setCheckable(true);
+    home->setAutoExclusive(true);
+    home->setChecked(true);
+    rl->addWidget(home);
+    auto *files = button("Open a file", rail, [this] { runCommand("Open..."); });
+    files->setObjectName("homeNav");
+    rl->addWidget(files);
+    auto *learn = button("Keyboard shortcuts", rail, [this] { runCommand("Keyboard Reference"); });
+    learn->setObjectName("homeNav");
+    rl->addWidget(learn);
     rl->addStretch();
-    rl->addWidget(button("New file", rail, [this] { newDocument(); }));
-    rl->addWidget(button("Open", rail, [this] { runCommand("Open..."); }));
+    auto *local = new QLabel("Your files. Your device.");
+    local->setObjectName("muted");
+    local->setWordWrap(true);
+    rl->addWidget(local);
+    auto *version = new QLabel("PhotoEdit 0.0.1");
+    version->setObjectName("muted");
+    rl->addWidget(version);
     outer->addWidget(rail);
+
+    auto *scroll = new QScrollArea;
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
     auto *body = new QWidget;
+    body->setObjectName("homeBody");
     auto *bl = new QVBoxLayout(body);
-    bl->setContentsMargins(42, 48, 42, 36);
-    bl->setSpacing(18);
-    auto *eyebrow = new QLabel("YOUR CREATIVE WORKSPACE");
+    bl->setContentsMargins(40, 36, 40, 28);
+    bl->setSpacing(16);
+    auto *eyebrow = new QLabel("SERIKA PHOTOEDIT");
     eyebrow->setObjectName("eyebrow");
     bl->addWidget(eyebrow);
-    auto *title = new QLabel("A place for your next idea.");
+    auto *title = new QLabel("Your creative space.");
     title->setObjectName("homeTitle");
     bl->addWidget(title);
-    auto *sub = new QLabel("Open a photograph, start a canvas, and make it yours.");
-    sub->setObjectName("muted");
+    auto *sub = new QLabel("From the first brushstroke to the final layer.");
+    sub->setObjectName("homeLead");
+    sub->setWordWrap(true);
     bl->addWidget(sub);
-    bl->addSpacing(20);
+    bl->addSpacing(8);
+
     auto *hero = new QFrame;
-    hero->setObjectName("card");
+    hero->setObjectName("homeHero");
     auto *hl = new QHBoxLayout(hero);
-    hl->setContentsMargins(25, 22, 25, 22);
+    hl->setContentsMargins(30, 24, 24, 24);
+    hl->setSpacing(24);
     auto *left = new QVBoxLayout;
+    left->setSpacing(14);
+    left->addStretch();
     auto *h = new QLabel("Start with a blank canvas");
-    h->setObjectName("sectionTitle");
+    h->setObjectName("heroTitle");
+    h->setWordWrap(true);
     left->addWidget(h);
-    left->addWidget(new QLabel("Pixels, layers, and room to experiment."));
-    auto *start = button("Create new", hero, [this] { newDocument(); });
-    start->setObjectName("primary");
-    start->setFixedWidth(112);
-    left->addSpacing(15);
-    left->addWidget(start);
+    auto *copy = new QLabel("Paint, crop, and bring it all together with layers and masks.");
+    copy->setObjectName("heroCopy");
+    copy->setWordWrap(true);
+    left->addWidget(copy);
+    left->addSpacing(10);
+    auto *actions = new QHBoxLayout;
+    actions->setSpacing(10);
+    auto *create = button("New canvas", hero, [this] { newDocument(); });
+    create->setObjectName("primary");
+    create->setToolTip("Create a new document (" +
+                       QKeySequence(QKeySequence::New).toString(QKeySequence::NativeText) + ")");
+    actions->addWidget(create);
+    auto *open = button("Open image", hero, [this] { runCommand("Open..."); });
+    open->setObjectName("secondary");
+    open->setToolTip("Open a document (" +
+                     QKeySequence(QKeySequence::Open).toString(QKeySequence::NativeText) + ")");
+    actions->addWidget(open);
+    actions->addStretch();
+    left->addLayout(actions);
+    left->addStretch();
     hl->addLayout(left, 1);
     auto *preview = new QLabel;
-    QImage art(320, 160, QImage::Format_RGB32);
-    QPainter p(&art);
-    QLinearGradient grad(0, 0, 320, 160);
-    grad.setColorAt(0, QColor("#503640"));
-    grad.setColorAt(1, QColor("#db986c"));
-    p.fillRect(art.rect(), grad);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor("#f3b877"));
-    p.drawEllipse(QPointF(236, 65), 32, 32);
-    p.setBrush(QColor("#62434a"));
-    p.drawPolygon(QPolygonF{QPointF(0, 160), QPointF(103, 40), QPointF(230, 160)});
-    p.setBrush(QColor("#322f40"));
-    p.drawPolygon(QPolygonF{QPointF(90, 160), QPointF(242, 76), QPointF(320, 140), QPointF(320, 160)});
-    p.end();
-    preview->setPixmap(QPixmap::fromImage(art));
+    preview->setObjectName("homeMascot");
+    preview->setAccessibleName("Serika PhotoEdit mascot drawing on a pen tablet");
+    QPixmap mascot(":/serika/logo.png");
+    mascot = mascot.scaled(560, 560, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    mascot.setDevicePixelRatio(2);
+    preview->setPixmap(mascot);
+    preview->setFixedSize(280, 280);
+    preview->setAlignment(Qt::AlignCenter);
     hl->addWidget(preview);
     bl->addWidget(hero);
+    bl->addSpacing(8);
+
     auto *row = new QHBoxLayout;
     auto *recent = new QLabel("Recent documents");
     recent->setObjectName("sectionTitle");
     row->addWidget(recent);
     row->addStretch();
-    row->addWidget(button("Open file...", body, [this] { runCommand("Open..."); }));
+    row->addWidget(button("Browse files", body, [this] { runCommand("Open..."); }));
     bl->addLayout(row);
     auto *recents = new QWidget;
     recents->setObjectName("recentContainer");
@@ -454,19 +509,24 @@ void MainWindow::buildHome() {
         auto *card = new QFrame;
         card->setObjectName("card");
         auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(12, 12, 12, 12);
         auto *thumb = new QLabel;
         QImage image;
         if (!FormatIO::isRaw(path) && !path.endsWith("spe") && !path.endsWith("psd"))
             image.load(path);
         if (!image.isNull())
             thumb->setPixmap(
-                QPixmap::fromImage(image.scaled(160, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                QPixmap::fromImage(image.scaled(160, 110, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
         else
-            thumb->setPixmap(QIcon(":/serika/icons/serika-photoedit.svg").pixmap(50, 50));
-        thumb->setFixedSize(160, 120);
+            thumb->setPixmap(QIcon(":/serika/logo.png").pixmap(84, 84));
+        thumb->setMinimumSize(100, 110);
         thumb->setAlignment(Qt::AlignCenter);
         cl->addWidget(thumb);
-        cl->addWidget(button(QFileInfo(path).fileName(), card, [this, path] { openFile(path); }));
+        auto *file = button(QFileInfo(path).fileName(), card, [this, path] { openFile(path); });
+        file->setToolTip(path);
+        file->setMinimumWidth(0);
+        file->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        cl->addWidget(file);
         auto *date = new QLabel(QFileInfo(path).lastModified().toString("dd MMM yyyy"));
         date->setObjectName("muted");
         cl->addWidget(date);
@@ -474,19 +534,25 @@ void MainWindow::buildHome() {
         index++;
     }
     if (!index) {
-        auto *empty =
+        auto *empty = new QFrame;
+        empty->setObjectName("card");
+        auto *el = new QHBoxLayout(empty);
+        el->setContentsMargins(22, 20, 22, 20);
+        auto *hint =
             new QLabel("Your recent files will appear here.\nTry the welcome project to explore the tools.");
-        empty->setObjectName("muted");
+        hint->setObjectName("muted");
+        hint->setWordWrap(true);
+        el->addWidget(hint, 1);
+        el->addWidget(button("Explore welcome project", empty, [this] { openDemo(); }));
         grid->addWidget(empty, 0, 0);
-        grid->addWidget(button("Explore welcome project", recents, [this] { openDemo(); }), 1, 0,
-                        Qt::AlignLeft);
     }
     bl->addWidget(recents);
     bl->addStretch();
-    auto *footer = new QLabel("0.0.1  ·  Made for the desktop");
+    auto *footer = new QLabel("Made by Serika  \u00b7  Open source  \u00b7  Made for your desktop");
     footer->setObjectName("muted");
     bl->addWidget(footer);
-    outer->addWidget(body, 1);
+    scroll->setWidget(body);
+    outer->addWidget(scroll, 1);
     m_center->addWidget(m_home);
 }
 void MainWindow::buildOptions() {
@@ -675,6 +741,7 @@ void MainWindow::buildTools() {
         auto *b = new QToolButton;
         b->setObjectName("tool_" + g.second.first());
         b->setCheckable(true);
+        b->setProperty("iconTool", g.second.first());
         b->setIcon(toolIcon(g.second.first()));
         b->setIconSize(QSize(18, 18));
         b->setFixedSize(30, 27);
@@ -684,6 +751,7 @@ void MainWindow::buildTools() {
         for (const auto &name : g.second) {
             auto *a = menu->addAction(toolIcon(name), name);
             connect(a, &QAction::triggered, this, [this, b, name] {
+                b->setProperty("iconTool", name);
                 b->setIcon(toolIcon(name));
                 selectTool(name);
             });
@@ -1171,18 +1239,7 @@ void MainWindow::buildDocks() {
             c->setZoom(v / 100.0);
     });
     dock("Navigator", nav);
-    auto *brush = new QWidget;
-    auto *bv = new QFormLayout(brush);
-    for (const auto &key : QStringList{"brushSize", "hardness", "brushOpacity", "flow"}) {
-        auto *source = m_options->findChild<QSpinBox *>(key);
-        auto *spin = new QSpinBox;
-        spin->setRange(source->minimum(), source->maximum());
-        spin->setValue(source->value());
-        bv->addRow(key, spin);
-        connect(spin, &QSpinBox::valueChanged, source, &QSpinBox::setValue);
-        connect(source, &QSpinBox::valueChanged, spin, &QSpinBox::setValue);
-    }
-    dock("Brush Settings", brush);
+    buildBrushSettings();
     for (const auto &name : QStringList{"Character", "Paragraph", "Glyphs"}) {
         auto *w = new QWidget;
         auto *v = new QVBoxLayout(w);
@@ -1363,11 +1420,9 @@ void MainWindow::buildDocks() {
         panel->show();
         previous = panel;
     }
-    const QHash<QString, QString> companions = {{"Swatches", "Color"},
-                                                {"Gradients", "Color"},
-                                                {"Styles", "Adjustments"},
-                                                {"Channels", "Layers"},
-                                                {"Paths", "Layers"}};
+    const QHash<QString, QString> companions = {{"Swatches", "Color"},     {"Gradients", "Color"},
+                                                {"Styles", "Adjustments"}, {"Brush Settings", "Adjustments"},
+                                                {"Channels", "Layers"},    {"Paths", "Layers"}};
     for (auto it = m_docks.begin(); it != m_docks.end(); ++it) {
         if (primary.contains(it.key()))
             continue;
@@ -1390,8 +1445,11 @@ void MainWindow::selectTool(const QString &tool) {
             m_lastToolInGroup[group.first] = tool;
     for (auto *b : m_tools)
         b->setChecked(false);
-    if (m_tools.contains(tool))
+    if (m_tools.contains(tool)) {
         m_tools[tool]->setChecked(true);
+        m_tools[tool]->setProperty("iconTool", tool);
+        m_tools[tool]->setIcon(toolIcon(tool));
+    }
     m_options->findChild<QLabel *>("toolLabel")->setText(tool);
     bool paint = QStringList{"Brush",         "Pencil",
                              "Mixer Brush",   "Color Replacement",
@@ -1420,10 +1478,8 @@ void MainWindow::selectTool(const QString &tool) {
         c->setProperty("brushBlendMode", m_options->findChild<QComboBox *>("brushMode")->currentText());
         c->setForeground(m_foreground);
         c->setBackground(m_background);
-        c->setBrushSize(m_options->findChild<QSpinBox *>("brushSize")->value());
-        c->setBrushHardness(m_options->findChild<QSpinBox *>("hardness")->value() / 100.0);
-        c->setBrushOpacity(m_options->findChild<QSpinBox *>("brushOpacity")->value() / 100.0);
-        c->setBrushFlow(m_options->findChild<QSpinBox *>("flow")->value() / 100.0);
+        if (m_brushSettings)
+            c->setBrushPreset(m_brushSettings->preset());
         c->setProperty("autoSelect", m_options->findChild<QCheckBox *>("autoSelect")->isChecked());
         c->setProperty("showTransformControls",
                        m_options->findChild<QCheckBox *>("showTransformControls")->isChecked());
@@ -1445,6 +1501,7 @@ void MainWindow::addDocument(Document *document) {
     auto *canvas = new CanvasView(document, page);
     canvas->setObjectName("canvas");
     canvas->setProperty("externalShortcuts", true);
+    connect(canvas, &CanvasView::interactionError, this, &MainWindow::showMessage);
     connect(canvas, &CanvasView::cropSettingsChanged, this, [this, canvas] {
         if (canvas != currentCanvas())
             return;
@@ -1456,15 +1513,7 @@ void MainWindow::addDocument(Document *document) {
     connect(canvas, &CanvasView::brushSettingsChanged, this, [this, canvas] {
         if (canvas != currentCanvas())
             return;
-        const QHash<QString, int> values{{"brushSize", canvas->brushSize()},
-                                         {"hardness", qRound(canvas->brushHardness() * 100)},
-                                         {"brushOpacity", qRound(canvas->brushOpacity() * 100)},
-                                         {"flow", qRound(canvas->brushFlow() * 100)}};
-        for (auto it = values.cbegin(); it != values.cend(); ++it)
-            if (auto *spin = m_options->findChild<QSpinBox *>(it.key())) {
-                QSignalBlocker block(spin);
-                spin->setValue(it.value());
-            }
+        syncBrushSettings(canvas->brushPreset());
     });
     v->addWidget(canvas, 1);
     auto *status = new QWidget;
@@ -1658,6 +1707,7 @@ void MainWindow::refreshLayers() {
         w->findChild<QToolButton *>("lockPixels")->setChecked(l->locked);
         w->findChild<QToolButton *>("lockPosition")->setChecked(l->lockPosition);
     }
+    updateLayerOperationUi();
 }
 void MainWindow::refreshProperties() {
     auto *layout = m_properties->layout();
@@ -1695,6 +1745,9 @@ void MainWindow::refreshProperties() {
         layout->addWidget(new QLabel(QString("%1 · %2 px").arg(l->font.family()).arg(l->font.pixelSize())));
         layout->addWidget(button("Edit text...", m_properties, [this] { runCommand("Edit Text..."); }));
     }
+    if (l->kind == LayerKind::GradientFill || l->kind == LayerKind::PatternFill ||
+        l->kind == LayerKind::SolidFill)
+        layout->addWidget(button("Edit fill...", m_properties, [this] { runCommand("Edit Fill..."); }));
     if (!l->mask.isNull())
         addMaskProperties(d, l->id, false);
     if (!l->vectorMask.isEmpty())
@@ -1729,6 +1782,12 @@ void MainWindow::refresh() {
         m_commands["Undo"]->setEnabled(d && d->canUndo());
     if (m_commands.contains("Redo"))
         m_commands["Redo"]->setEnabled(d && d->canRedo());
+    const auto proof = d ? d->state.metadata.value("proofing").toObject() : QJsonObject{};
+    m_commands["Proof Colors"]->setChecked(proof.value("enabled").toBool());
+    m_commands["Gamut Warning"]->setChecked(proof.value("gamutWarning").toBool());
+    for (const auto &name : QStringList{"Proof Setup...", "Proof Colors", "Gamut Warning",
+                                        "Export CMYK TIFF...", "Export CMYK Separations..."})
+        m_commands[name]->setEnabled(d != nullptr);
     refreshLayers();
     refreshProperties();
     if (auto *list = m_docks["Layer Comps"]->widget()->findChild<QListWidget *>("layerCompsList")) {
@@ -1759,9 +1818,9 @@ void MainWindow::refresh() {
                 bins[qGray(small.pixel(x, y))]++;
         int maximum = *std::max_element(std::begin(bins), std::end(bins));
         QImage graph(256, 100, QImage::Format_RGB32);
-        graph.fill(QColor("#292929"));
+        graph.fill(qApp->palette().color(QPalette::Base));
         QPainter painter(&graph);
-        painter.setPen(QColor("#bbb"));
+        painter.setPen(qApp->palette().color(QPalette::Text));
         for (int i = 0; i < 256; i++)
             painter.drawLine(i, 99, i, 99 - (maximum ? bins[i] * 90 / maximum : 0));
         m_histogram->setPixmap(QPixmap::fromImage(graph));
@@ -1781,12 +1840,30 @@ void MainWindow::refresh() {
     m_refreshing = false;
 }
 void MainWindow::applyTheme(const QString &name) {
-    m_theme = name;
+    qApp->setPalette(themePalette(name));
     qApp->setStyleSheet(themeStyle(name));
     m_settings.setValue("theme", name);
-    for (int i = 0; i < m_tabs->count(); i++)
-        if (auto *c = m_tabs->widget(i)->findChild<CanvasView *>())
-            c->setSurround(themeCanvas(name));
+    for (auto *widget : QApplication::topLevelWidgets()) {
+        auto *window = qobject_cast<MainWindow *>(widget);
+        if (!window)
+            continue;
+        window->m_theme = name;
+        for (auto *tool : window->findChildren<QToolButton *>()) {
+            const auto iconName = tool->property("iconTool").toString();
+            if (iconName.isEmpty())
+                continue;
+            tool->setIcon(toolIcon(iconName));
+            if (tool->menu())
+                for (auto *action : tool->menu()->actions())
+                    action->setIcon(toolIcon(action->text()));
+        }
+        if (window->m_tabs)
+            for (int i = 0; i < window->m_tabs->count(); i++)
+                if (auto *canvas = window->m_tabs->widget(i)->findChild<CanvasView *>())
+                    canvas->setSurround(themeCanvas(name));
+        if (window->m_navigator && window->m_histogram)
+            window->refresh();
+    }
 }
 void MainWindow::setWorkspace(const QString &name, bool reset) {
     m_workspace = name;
@@ -1826,7 +1903,8 @@ void MainWindow::setWorkspace(const QString &name, bool reset) {
     if (name == "Painting") {
         m_docks["Brushes"]->show();
         tabifyDockWidget(m_docks["Adjustments"], m_docks["Brushes"]);
-        m_docks["Brushes"]->raise();
+        m_docks["Brush Settings"]->show();
+        m_docks["Brush Settings"]->raise();
     }
     if (name == "Graphic and Web") {
         m_docks["Character"]->show();
@@ -1844,7 +1922,9 @@ void MainWindow::setWorkspace(const QString &name, bool reset) {
     if (currentDocument())
         QTimer::singleShot(0, this, [this] {
             resizeDocks({m_docks["Color"], m_docks["Adjustments"], m_docks["Layers"], m_docks["Properties"]},
-                        {210, 180, 420, 180}, Qt::Vertical);
+                        m_workspace == "Painting" ? QList<int>{170, 400, 300, 140}
+                                                  : QList<int>{210, 180, 420, 180},
+                        Qt::Vertical);
         });
     m_toolDock->setVisible(bool(currentDocument()));
     m_options->setVisible(bool(currentDocument()));
@@ -1951,6 +2031,8 @@ bool MainWindow::saveDocument(bool saveAs, bool copy) {
     auto *d = currentDocument();
     if (!d)
         return false;
+    if (isSmartObjectContents(d))
+        return saveSmartObjectContents(d, saveAs || copy);
     QString path = d->filePath;
     const QString extension = QFileInfo(path).suffix().toLower();
     if (!copy && !path.isEmpty() && !QStringList{"spe", "speb", "psd", "psb"}.contains(extension)) {

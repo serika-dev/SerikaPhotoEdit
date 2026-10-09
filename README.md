@@ -4,6 +4,8 @@ An open-source desktop photo editor built with C++20 and Qt 6.8 Widgets. Serika 
 
 **Version 0.0.1 is an early release.** It provides working editing workflows, with substantial limits in specialist tools and interchange. See the [implementation status](docs/IMPLEMENTATION-STATUS.md) and [format fidelity notes](src/io/README.md).
 
+The current source includes an unreleased [Serika brand refresh](docs/BRANDING.md) and an expanded editing workflow: multi-layer operations, editable Smart Objects, brush dynamics, per-channel Curves and real gradient/pattern fill editors. It also adds [GPU processing](docs/GPU-PROCESSING.md), [ICC CMYK proofing/export](docs/COLOR-MANAGEMENT.md), [rich typography](docs/TYPOGRAPHY.md) and a [local MCP server](docs/MCP-SERVER.md). Published v0.0.1 downloads retain the original interface and feature set. See the [new editing workflows](docs/EDITING-WORKFLOWS.md).
+
 ![Serika PhotoEdit editor](docs/screenshots/editor.png)
 
 ## Download
@@ -44,10 +46,13 @@ Crop (`C`) previews changes until Enter applies them; Escape cancels. Free Trans
 - Checksummed, atomically saved SPE/SPEB; original PSD/PSB import/export; LibRaw RAW import and Develop; common raster formats, TGA, float HDR, SVG rasterization and PDF page import.
 - CPU filters, retained-source smart-filter stacks, selectable History Brush sources, Fade, action recording/playback and headless folder batch processing.
 - Configurable Photoshop-style shortcuts with conflict detection, tool scopes, held modifiers, tool cycles and JSON import/export.
+- Optional OpenGL shader adjustments/blur with CPU fallback; ICC CMYK proofing and 8/16-bit TIFF/separation export; rich text spans, paragraph layout and type on paths.
+- Local stdio MCP tools for documents, layers, previews, file export, action playback and undo/redo.
+- Multi-layer alignment/distribution and group operations; editable embedded/linked Smart Objects; brush dynamics with native preset libraries; draggable RGB/channel Curves; five gradient styles and tiled pattern fills.
 
 ## Build from source
 
-Requires **CMake 3.25+**, a **C++20 compiler**, Ninja or another CMake generator, and **Qt 6.8+** with Core, Gui, Widgets, PrintSupport, Svg and Test. Qt Image Formats supplies optional image codecs; Qt Pdf enables PDF import. Dynamically linked LibRaw and zlib are detected when available. RAW import is unavailable without LibRaw; `SERIKA_WITH_RAW=OFF` explicitly disables its discovery.
+Requires **CMake 3.25+**, a **C++20 compiler**, Ninja or another CMake generator, and **Qt 6.8+** with Core, Gui, Widgets, PrintSupport, Svg and Test. Qt Image Formats supplies optional image codecs; Qt Pdf enables PDF import. Dynamically linked LibRaw, zlib and LittleCMS2 are detected when available. Qt OpenGL enables optional GPU processing. Install `liblcms2-dev` on Debian/Ubuntu, `little-cms2` with Homebrew, or run `scripts/build-lcms.ps1` on Windows and add its install directory to `CMAKE_PREFIX_PATH`. Use `SERIKA_REQUIRE_CMYK=ON` to require ICC proofing/export support, or `SERIKA_WITH_GPU=OFF` for a CPU-only build. RAW import is unavailable without LibRaw; `SERIKA_WITH_RAW=OFF` explicitly disables its discovery.
 
 ```sh
 git clone https://github.com/serika-dev/SerikaPhotoEdit.git
@@ -73,9 +78,11 @@ Many distributions ship Qt older than 6.8, so check the selected SDK. [Earlier C
 
 ## Validation and limits
 
-The Windows Release build passed with compiler warnings treated as errors. All eight CTest suites passed, with **227 QtTest checks**: 79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows. Counts include lifecycle slots and data-driven rows. Native UI, portable launch, headless batch, ZIP integrity and MSI administrative extraction were also checked. Native Linux x86_64/aarch64 and macOS Intel/Apple Silicon builds each passed the same 227 checks without failures or skips, plus their package smoke checks. See the [validation record](docs/RELEASE-VALIDATION.md) and [benchmark measurements](docs/performance.json).
+The current unreleased Windows x64 Release build passes **all 17 CTest suites: 383 QtTest checks, zero failures**. The headless platform skips 38 hardware GPU cases; a separate native AMD Radeon run passes **44 GPU checks**, with one expected unavailable-device branch skipped. Compiler warnings are treated as errors. New coverage includes ICC transforms/CMYK TIFF/separations, proofing menus/canvas, rich text persistence/undo, GPU precision/CPU parity, and live MCP protocol/file-access/rollback tests. Fourteen UI captures inspect dark/light controls and an editable Smart Object tab with native UI settings unchanged. The new Windows/Linux/macOS CI builds require LittleCMS; results for this source revision are pending.
 
-Serika does not have full Photoshop parity. Content-aware tools use local CPU algorithms; embedded smart-object subdocuments, comprehensive Adobe descriptors, full typography, CMYK/Lab editing, professional ICC/proof workflows, advanced multi-layer transforms and GPU acceleration remain limited or absent. Many operations allocate full images despite the tiled model; canvas creation is capped at 80 million pixels. Test results cover the exercised behaviors, rather than every image, camera or external PSD/PSB file.
+The published **v0.0.1** Windows build passed the original eight suites and **227 checks**: 79 core, 37 I/O, 8 UI, 34 canvas, 13 actions, 14 shortcuts, 21 masks and 21 workflows. Counts include lifecycle slots and data-driven rows. Native UI, portable launch, headless batch, ZIP integrity and MSI administrative extraction were also checked. Native Linux x86_64/aarch64 and macOS Intel/Apple Silicon builds each passed the same 227 checks without failures or skips, plus their package smoke checks. See the [release validation record](docs/RELEASE-VALIDATION.md) and [earlier benchmark measurements](docs/performance.json).
+
+Serika does not have full Photoshop parity. Content-aware tools use local CPU algorithms; comprehensive Adobe descriptors, Adobe typography interchange, native CMYK/Lab layer editing, spot colors, advanced multi-layer transforms and a full GPU compositor remain absent or limited. ICC proofing/export needs a suitable printer profile; no proprietary press profiles are bundled. Embedded Smart Object documents use Serika's native format; other editors receive raster PSD fallbacks. Many operations allocate full images despite the tiled model; canvas creation is capped at 80 million pixels. Test results cover the exercised behaviors, rather than every image, camera or external PSD/PSB file.
 
 ## Headless actions
 

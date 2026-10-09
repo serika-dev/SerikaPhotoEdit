@@ -62,6 +62,10 @@ if [ -n "${ICON_PNG:-}" ]; then
     /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile SerikaPhotoEdit.icns' "$bundle/Contents/Info.plist" 2>/dev/null ||
         /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string SerikaPhotoEdit.icns' "$bundle/Contents/Info.plist"
 fi
+# New sources bundle the brand icon. Older tags retain optional ICON_PNG behavior.
+if [ -f "$source_dir/packaging/macos/SerikaPhotoEdit.icns" ]; then
+    [ -f "$bundle/Contents/Resources/SerikaPhotoEdit.icns" ] || { echo 'Missing bundled app icon.' >&2; exit 1; }
+fi
 # macdeployqt deploys Cocoa by default; --batch also needs the offscreen plugin.
 mkdir -p "$bundle/Contents/PlugIns/platforms"
 for plugin in libqcocoa.dylib libqoffscreen.dylib; do

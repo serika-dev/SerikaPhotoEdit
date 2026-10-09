@@ -1,5 +1,6 @@
 // Clean-room PSD/PSB implementation based on Adobe's public file format
 // specification: https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/
+#include "io/EmbeddedDocument.h"
 #include "io/FormatInternal.h"
 #include "io/LayerExtras.h"
 #include <QColorSpace>
@@ -428,6 +429,8 @@ void parseTags(Reader &extra, Record &rec, bool psb, QStringList &report) {
         }
         auto key = extra.take(4);
         const auto n = extra.length(signature == "8B64" || tag64(key, psb));
+        if (key == "sPEb" && (n == 0 || n > quint64(MaxEmbeddedDocumentBytes)))
+            throw std::runtime_error("Invalid Serika PSD embedded contents length.");
         auto data = extra.take(n);
         if (n % 2 && extra.left())
             extra.skip(1);
@@ -467,7 +470,7 @@ void parseTags(Reader &extra, Record &rec, bool psb, QStringList &report) {
         } else if (key == "sPEd") {
             auto o = QJsonDocument::fromJson(data).object();
             int kind = o["kind"].toInt(int(rec.layer.kind));
-            if (kind < 0 || kind > int(LayerKind::Artboard))
+            if (kind < 0 || kind > int(LayerKind::PatternFill))
                 throw std::runtime_error("Invalid Serika PSD layer kind.");
             rec.layer.kind = LayerKind(kind);
             auto offset = o["offset"].toArray();
@@ -494,6 +497,10 @@ void parseTags(Reader &extra, Record &rec, bool psb, QStringList &report) {
             rec.retainedSmartSource =
                 rec.layer.kind == LayerKind::SmartObject && extras.contains("smartSource");
             rec.privateMaskLayout = extras.contains("maskOffset");
+        } else if (key == "sPEb") {
+            if (!rec.layer.embeddedDocument.isEmpty() || !validEmbeddedDocument(data))
+                throw std::runtime_error("Invalid or duplicate Serika PSD embedded contents.");
+            rec.layer.embeddedDocument = data;
         } else if (key == "clbl" || key == "infx" || key == "knko" || key == "lclr" || key == "lnsr") {
             preserved.append(QJsonObject{{"key", QString::fromLatin1(key)},
                                          {"data", QString::fromLatin1(data.toBase64())}});
@@ -892,6 +899,9 @@ bool writePsd(const Document *doc, const QString &path, QString *error) {
     try {
         if (!doc || doc->state.size.isEmpty())
             throw std::runtime_error("Invalid document.");
+        for (const auto &layer : doc->state.layers)
+            if (!layer.embeddedDocument.isEmpty() && !validEmbeddedDocument(layer.embeddedDocument))
+                throw std::runtime_error("Invalid embedded native contents on a PSD layer.");
         bool psb = QFileInfo(path).suffix().compare("psb", Qt::CaseInsensitive) == 0;
         const int depth = doc->state.bitDepth == 32 ? 32 : doc->state.bitDepth == 16 ? 16 : 8;
         if (doc->state.size.width() > (psb ? 300000 : 30000) ||
@@ -1017,6 +1027,8 @@ bool writePsd(const Document *doc, const QString &path, QString *error) {
                 extra.tag("nvrt", {});
             if (rec.section != 3) {
                 extra.tag("sPEd", privateLayer(l));
+                if (!l.embeddedDocument.isEmpty())
+                    extra.tag("sPEb", l.embeddedDocument);
                 Writer order;
                 order.i32(doc->indexForId(l.id));
                 extra.tag("sPEi", order.b);

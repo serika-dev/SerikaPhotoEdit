@@ -20,6 +20,7 @@ class QToolBar;
 class QToolButton;
 class QCheckBox;
 namespace serika {
+class BrushSettingsWidget;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
@@ -68,8 +69,9 @@ class MainWindow : public QMainWindow {
     QLabel *m_histogram = nullptr;
     QLabel *m_navigator = nullptr;
     QWidget *m_properties = nullptr;
+    BrushSettingsWidget *m_brushSettings = nullptr;
     QLabel *m_fgSwatch = nullptr;
-    QColor m_foreground = QColor("#E8893A");
+    QColor m_foreground = QColor("#8B5CF6");
     QColor m_background = Qt::white;
     QString m_tool = "Move";
     QString m_theme = "Dark";
@@ -98,6 +100,11 @@ class MainWindow : public QMainWindow {
     QPointer<QWidget> m_draggedPage;
     void detachDocument(int index);
     void buildMenus();
+    void initializeLayerOperations();
+    bool runLayerOperation(const QString &name);
+    QVector<quint64> selectedLayerIds() const;
+    void selectLayerIds(const QVector<quint64> &ids);
+    void updateLayerOperationUi();
     void initializeShortcuts();
     void activateShortcut(const ShortcutEntry &entry, bool released);
     void updateShortcutLabels();
@@ -109,17 +116,25 @@ class MainWindow : public QMainWindow {
     void buildTools();
     void buildOptions();
     void buildDocks();
+    void buildBrushSettings();
+    void syncBrushSettings(const BrushPreset &preset);
     void buildLayers(QWidget *parent);
     QAction *command(QMenu *menu, const QString &name, const QKeySequence &shortcut = {});
     QDockWidget *dock(const QString &name, QWidget *widget, bool visible = false);
     void addDocument(Document *document);
     bool closeDocument(int index);
     bool saveDocument(bool saveAs = false, bool copy = false);
+    bool runSmartObjectCommand(const QString &name);
+    bool runTypographyCommand(const QString &name);
+    bool runProofingCommand(const QString &name);
+    bool isSmartObjectContents(const Document *document) const;
+    bool saveSmartObjectContents(Document *document, bool exportCopy = false);
     void refresh();
     void refreshLayers();
     void refreshProperties();
     void selectTool(const QString &tool);
     void adjust(const QString &name, bool destructive = false);
+    void editFill(const QString &command);
     void filter(const QString &name, bool repeat = false);
     void develop(Document *document);
     void preferences();

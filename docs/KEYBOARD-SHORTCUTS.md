@@ -57,3 +57,5 @@ The application saves `shortcuts.json` in Qt's application configuration directo
 Each key sequence may contain up to four chords. The chord timeout is 1.5 seconds. The editor shows three bindings per row and preserves additional bindings from imported sets. Import validates IDs, sequence syntax and conflicts before changing any active binding. Reset restores defaults, including disabled keys.
 
 Default shortcut references: [Adobe keyboard shortcut settings](https://helpx.adobe.com/photoshop/desktop/get-started/settings-and-preferences/view-keyboard-shortcuts.html), [Adobe public keyboard reference](https://helpx.adobe.com/content/dam/help/en/pdf/photoshop_reference.pdf). Serika's interface icons and branding are original.
+
+CMYK proofing: **Ctrl+Y** toggles Proof Colors; **Ctrl+Shift+Y** toggles Gamut Warning (Command on macOS). Select a printer profile in View → Proof Setup first. These bindings can be remapped with the rest of the command registry.

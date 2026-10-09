@@ -238,12 +238,12 @@ void CanvasView::renderTransformPreview() {
 void CanvasView::drawTransformPreview(QPainter &painter) {
     if (!m_transformActive)
         return;
-    QPen outline(QColor("#f1f1f1"), 1);
+    QPen outline(palette().color(QPalette::Highlight), 1);
     outline.setCosmetic(true);
     painter.setPen(outline);
     painter.setBrush(Qt::NoBrush);
     painter.drawPolygon(m_transformQuad);
-    painter.setBrush(QColor("#262626"));
+    painter.setBrush(palette().color(QPalette::Base));
     const qreal radius = 3.5 / m_zoom;
     for (int i = 0; i < 4; ++i) {
         for (const QPointF point :

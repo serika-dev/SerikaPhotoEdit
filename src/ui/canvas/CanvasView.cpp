@@ -1,5 +1,7 @@
 #include "CanvasView.h"
 #include "CropAlgorithms.h"
+#include "document/ColorManagement.h"
+#include "document/LayerOperations.h"
 #include "document/TransformOperations.h"
 #include "tools/LocalAlgorithms.h"
 #include <QApplication>
@@ -12,6 +14,7 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QRadialGradient>
+#include <QRandomGenerator>
 #include <QResizeEvent>
 #include <QSet>
 #include <QTabletEvent>
@@ -28,6 +31,33 @@ bool named(const QString &tool, std::initializer_list<const char *> names) {
         if (tool == QLatin1String(name))
             return true;
     return false;
+}
+bool selectedAncestor(const Document *document, quint64 id, const QVector<quint64> &roots) {
+    QSet<quint64> visited;
+    while (id && !visited.contains(id)) {
+        if (roots.contains(id))
+            return true;
+        visited.insert(id);
+        const int index = document->indexForId(id);
+        if (index < 0)
+            break;
+        id = document->state.layers[index].parentId;
+    }
+    return false;
+}
+QString maskMoveLock(const Document *document, quint64 id) {
+    QSet<quint64> visited;
+    while (id && !visited.contains(id)) {
+        visited.insert(id);
+        const int index = document->indexForId(id);
+        if (index < 0)
+            return QStringLiteral("The targeted mask layer no longer exists.");
+        const Layer &layer = document->state.layers[index];
+        if (layer.locked || layer.lockPosition)
+            return QStringLiteral("Layer '%1' is locked against movement.").arg(layer.name);
+        id = layer.parentId;
+    }
+    return {};
 }
 bool paintTool(const QString &tool) {
     return named(tool, {"Brush",
@@ -207,6 +237,10 @@ void CanvasView::setTool(const QString &tool) {
         m_document->cancelTransaction();
         m_dragging = false;
     }
+    m_brushDynamics.cancel();
+    m_tabletTilt = {};
+    m_moving = false;
+    m_moveLayerIds.clear();
     m_tool = tool;
     cancelCrop();
     m_transporting = false;
@@ -251,17 +285,118 @@ void CanvasView::setBrushFlow(qreal flow) {
     m_flow = std::clamp(flow, qreal(0), qreal(1));
     emit brushSettingsChanged();
 }
-void CanvasView::setBrushSpacing(qreal spacing) { m_spacing = std::clamp(spacing, qreal(0.01), qreal(2)); }
+void CanvasView::setBrushSpacing(qreal spacing) {
+    m_spacing = std::clamp(spacing, qreal(0.01), qreal(4));
+    emit brushSettingsChanged();
+}
 void CanvasView::setBrushAngle(qreal degrees) {
     m_brushAngle = degrees;
     update();
+    emit brushSettingsChanged();
 }
 void CanvasView::setBrushRoundness(qreal roundness) {
     m_roundness = std::clamp(roundness, qreal(0.05), qreal(1));
     update();
+    emit brushSettingsChanged();
 }
 void CanvasView::setBrushSmoothing(qreal smoothing) {
     m_smoothing = std::clamp(smoothing, qreal(0), qreal(1));
+    emit brushSettingsChanged();
+}
+BrushPreset CanvasView::brushPreset() const {
+    BrushPreset preset = m_brushPreset;
+    preset.size = m_brushSize;
+    preset.hardness = m_hardness;
+    preset.opacity = m_opacity;
+    preset.flow = m_flow;
+    preset.spacing = m_spacing;
+    preset.angle = m_brushAngle;
+    preset.roundness = m_roundness;
+    preset.smoothing = m_smoothing;
+    return preset.normalized();
+}
+void CanvasView::setBrushPreset(const BrushPreset &preset) {
+    m_brushPreset = preset.normalized();
+    m_brushSize = m_brushPreset.size;
+    m_hardness = m_brushPreset.hardness;
+    m_opacity = m_brushPreset.opacity;
+    m_flow = m_brushPreset.flow;
+    m_spacing = m_brushPreset.spacing;
+    m_brushAngle = m_brushPreset.angle;
+    m_roundness = m_brushPreset.roundness;
+    m_smoothing = m_brushPreset.smoothing;
+    update();
+    emit brushSettingsChanged();
+}
+QVector<quint64> CanvasView::selectedMoveRoots() const {
+    QVector<quint64> ids;
+    for (const QVariant &value : property("selectedLayerIds").toList()) {
+        const quint64 id = value.toULongLong();
+        if (id && m_document->indexForId(id) >= 0)
+            ids.append(id);
+    }
+    if (ids.isEmpty() && m_document->activeLayer())
+        ids.append(m_document->activeLayer()->id);
+    return selectedLayerRoots(m_document, ids);
+}
+void CanvasView::nudgeSelectedLayers(QPointF delta) {
+    if (!std::isfinite(delta.x()) || !std::isfinite(delta.y()) || delta.isNull())
+        return;
+    if (m_dragging)
+        cancelInteraction();
+    const auto roots = selectedMoveRoots();
+    Layer *layer = m_document->activeLayer();
+    if (roots.size() == 1 && layer && roots.first() == layer->id && layer->maskTarget &&
+        !layer->mask.isNull() && !layer->maskLinked) {
+        const QString lock = maskMoveLock(m_document, layer->id);
+        if (!lock.isEmpty()) {
+            emit interactionError(lock);
+            return;
+        }
+        const int index = m_document->indexForId(layer->id);
+        // Resolve mutable storage after the transaction snapshot, so Qt detaches its shared vector.
+        m_document->mutate("Nudge layer mask",
+                           [this, index, delta] { m_document->state.layers[index].maskOffset += delta; });
+        return;
+    }
+    const auto result = translateLayers(m_document, roots, delta);
+    if (!result.error.isEmpty())
+        emit interactionError(result.error);
+}
+bool CanvasView::updateMove(QPointF point, Qt::KeyboardModifiers modifiers) {
+    QPointF delta = point - m_start;
+    if (modifiers.testFlag(Qt::ShiftModifier)) {
+        if (std::abs(delta.x()) >= std::abs(delta.y()))
+            delta.setY(0);
+        else
+            delta.setX(0);
+    }
+    const QPointF incremental = delta - m_moveAppliedDelta;
+    QString error;
+    if (m_moveMaskOnly && !m_moveLayerIds.isEmpty()) {
+        const int index = m_document->indexForId(m_moveLayerIds.first());
+        error = maskMoveLock(m_document, m_moveLayerIds.first());
+        if (index >= 0 && error.isEmpty()) {
+            Layer &layer = m_document->state.layers[index];
+            if (layer.mask.isNull() || layer.maskLinked)
+                error = QStringLiteral("The targeted mask changed during the gesture.");
+            else if (!incremental.isNull())
+                m_document->mutate("Move layer mask", [this, index, incremental] {
+                    m_document->state.layers[index].maskOffset += incremental;
+                });
+        }
+    } else
+        error = translateLayers(m_document, m_moveLayerIds, incremental).error;
+    if (!error.isEmpty()) {
+        m_document->cancelTransaction();
+        m_dragging = false;
+        m_moving = false;
+        m_moveLayerIds.clear();
+        emit interactionError(error);
+        return false;
+    }
+    m_moveAppliedDelta = delta;
+    return true;
 }
 void CanvasView::setShowRulers(bool enabled) {
     m_rulers = enabled;
@@ -382,12 +517,15 @@ bool CanvasView::hasPendingInteraction() const {
     return m_dragging || hasCropPreview() || !m_perspectivePoints.isEmpty() || m_transformActive;
 }
 void CanvasView::cancelInteraction() {
+    m_brushDynamics.cancel();
+    m_tabletTilt = {};
     cancelTransform();
     if (m_dragging && !m_transporting && !m_transportSelecting && m_cropHandle == -1 && !m_straightening &&
         !m_cropRotating)
         m_document->cancelTransaction();
     m_dragging = false;
     m_moving = false;
+    m_moveLayerIds.clear();
     m_transporting = false;
     m_transportSelecting = false;
     m_transportPreview = {};
@@ -818,6 +956,25 @@ void CanvasView::updateSelectionOutline() {
     }
 }
 
+QImage CanvasView::proofPreview(const QImage &source) {
+    const auto settings = m_document->state.metadata.value("proofing").toObject();
+    if (!settings.value("enabled").toBool() && !settings.value("gamutWarning").toBool()) {
+        m_proofPreview = {};
+        setProperty("proofError", QString());
+        return source;
+    }
+    if (m_proofPreview.isNull() || source.cacheKey() != m_proofSourceKey || settings != m_proofSettings ||
+        m_proofSourceIcc != m_document->state.iccProfile) {
+        QString error;
+        m_proofPreview = displayProofImage(m_document, source, &error);
+        m_proofSourceKey = source.cacheKey();
+        m_proofSettings = settings;
+        m_proofSourceIcc = m_document->state.iccProfile;
+        setProperty("proofError", error);
+    }
+    return m_proofPreview;
+}
+
 void CanvasView::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.fillRect(rect(), m_surround);
@@ -851,7 +1008,8 @@ void CanvasView::paintEvent(QPaintEvent *) {
     if (m_layerMaskPreview == MaskPreview::Grayscale)
         painter.drawImage(QPoint(), activeMaskPreview());
     else
-        painter.drawImage(QPoint(0, 0), m_transformActive ? m_transformPreview : m_document->composite());
+        painter.drawImage(QPoint(0, 0),
+                          proofPreview(m_transformActive ? m_transformPreview : m_document->composite()));
     if (m_layerMaskPreview == MaskPreview::Overlay) {
         const QImage mask = activeMaskPreview();
         if (m_layerMaskOverlayCache.isNull()) {
@@ -935,7 +1093,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
             painter.drawRect(m_dragRect);
     }
     if (!m_penPath.isEmpty() && extras) {
-        QPen pen(QColor("#e8893a"), 1);
+        QPen pen(palette().color(QPalette::Highlight), 1);
         pen.setCosmetic(true);
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
@@ -943,7 +1101,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
         for (int i = 0; i < m_penPath.elementCount(); ++i) {
             auto element = m_penPath.elementAt(i);
             painter.fillRect(QRectF(element.x - 2 / m_zoom, element.y - 2 / m_zoom, 4 / m_zoom, 4 / m_zoom),
-                             QColor("#e8893a"));
+                             palette().color(QPalette::Highlight));
         }
     }
     if (m_tool == "Direct Selection" && extras) {
@@ -951,7 +1109,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
         if (layer && layer->kind == LayerKind::Shape) {
             painter.save();
             painter.translate(effectiveOffset(m_document, *layer));
-            QPen outline(QColor("#e8893a"), 1);
+            QPen outline(palette().color(QPalette::Highlight), 1);
             outline.setCosmetic(true);
             painter.setPen(outline);
             painter.setBrush(Qt::NoBrush);
@@ -960,7 +1118,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
                 const auto element = layer->shape.elementAt(i);
                 painter.fillRect(
                     QRectF(element.x - 3 / m_zoom, element.y - 3 / m_zoom, 6 / m_zoom, 6 / m_zoom),
-                    QColor("#e8893a"));
+                    palette().color(QPalette::Highlight));
             }
             painter.restore();
         }
@@ -968,7 +1126,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
     if (property("showTransformControls").toBool() && !m_transformActive) {
         const QRectF bounds = activeLayerBounds();
         if (!bounds.isEmpty()) {
-            QPen outline(QColor("#dddddd"), 1);
+            QPen outline(palette().color(QPalette::Highlight), 1);
             outline.setCosmetic(true);
             painter.setPen(outline);
             painter.setBrush(Qt::NoBrush);
@@ -981,14 +1139,14 @@ void CanvasView::paintEvent(QPaintEvent *) {
                                          {bounds.center().x(), bounds.bottom()},
                                          {bounds.left(), bounds.center().y()},
                                          {bounds.right(), bounds.center().y()}};
-            painter.setBrush(QColor("#262626"));
+            painter.setBrush(palette().color(QPalette::Base));
             for (const QPointF handle : handles)
                 painter.drawRect(
                     QRectF(handle - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)));
         }
     }
     if (!m_perspectivePoints.isEmpty() && m_perspectivePoints.size() < 4) {
-        QPen outline(QColor("#e8893a"), 1);
+        QPen outline(palette().color(QPalette::Highlight), 1);
         outline.setCosmetic(true);
         painter.setPen(outline);
         painter.setBrush(Qt::NoBrush);
@@ -996,7 +1154,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
         painter.drawLine(m_perspectivePoints.last(), toDocument(m_cursor));
         for (const QPointF point : m_perspectivePoints)
             painter.fillRect(QRectF(point - QPointF(3 / m_zoom, 3 / m_zoom), QSizeF(6 / m_zoom, 6 / m_zoom)),
-                             QColor("#e8893a"));
+                             palette().color(QPalette::Highlight));
     }
     drawCropPreview(painter);
     drawTransformPreview(painter);
@@ -1023,7 +1181,7 @@ void CanvasView::paintEvent(QPaintEvent *) {
     painter.resetTransform();
     painter.setClipping(false);
     if (m_tool == "Perspective Crop" || m_cropActive || m_transformActive) {
-        painter.setPen(QColor("#e8e8e8"));
+        painter.setPen(palette().color(QPalette::Text));
         painter.drawText(
             QPointF(32, height() - 16),
             m_transformActive ? tr("Free Transform: drag handles; outside rotates; Alt scales from center; "
@@ -1034,9 +1192,9 @@ void CanvasView::paintEvent(QPaintEvent *) {
                                 : tr("Drag handles to crop. Enter applies; Esc cancels. O cycles overlays."));
     }
     if (m_rulers) {
-        painter.fillRect(0, 0, width(), 20, QColor("#363636"));
-        painter.fillRect(0, 0, 20, height(), QColor("#363636"));
-        painter.setPen(QColor("#bbbbbb"));
+        painter.fillRect(0, 0, width(), 20, palette().color(QPalette::Base));
+        painter.fillRect(0, 0, 20, height(), palette().color(QPalette::Base));
+        painter.setPen(palette().color(QPalette::Text));
         QFont font = painter.font();
         font.setPixelSize(9);
         painter.setFont(font);
@@ -1076,8 +1234,8 @@ void CanvasView::paintEvent(QPaintEvent *) {
                 }
             }
         }
-        painter.fillRect(0, 0, 20, 20, QColor("#424242"));
-        painter.setPen(QColor("#222222"));
+        painter.fillRect(0, 0, 20, 20, palette().color(QPalette::Button));
+        painter.setPen(palette().color(QPalette::Mid));
         painter.drawLine(20, 0, 20, height());
         painter.drawLine(0, 20, width(), 20);
     }
@@ -1268,8 +1426,11 @@ void CanvasView::applyImage(const QImage &input, QPoint documentOrigin, bool era
     m_document->touch();
 }
 
-void CanvasView::dab(QPointF point) {
-    if (m_opacity <= 0 || m_flow <= 0)
+void CanvasView::dab(const BrushDab &sample) {
+    const QPointF point = sample.position;
+    if (sample.opacity <= 0 || sample.flow <= 0)
+        return;
+    if (sample.opacity <= 0 || sample.flow <= 0)
         return;
     if (!documentRect(m_document).contains(point.toPoint()))
         return;
@@ -1278,7 +1439,7 @@ void CanvasView::dab(QPointF point) {
         mask.fill(0);
         const QImage image = m_document->composite();
         const QColor seed = image.pixelColor(point.toPoint());
-        const qreal radius = m_brushSize / 2.0;
+        const qreal radius = sample.diameter / 2.0;
         const QRect bounds = QRectF(point - QPointF(radius, radius), QSizeF(radius * 2, radius * 2))
                                  .toAlignedRect()
                                  .intersected(image.rect());
@@ -1302,11 +1463,10 @@ void CanvasView::dab(QPointF point) {
         QPainter painter(&m_healMask);
         painter.setBrush(Qt::white);
         painter.setPen(Qt::NoPen);
-        painter.drawEllipse(point, m_brushSize / 2.0, m_brushSize / 2.0);
+        painter.drawEllipse(point, sample.diameter / 2.0, sample.diameter / 2.0);
         return;
     }
-    const qreal pressure = std::clamp(m_pressure, qreal(0.05), qreal(1));
-    const qreal radius = std::max(qreal(0.5), m_brushSize * pressure / 2);
+    const qreal radius = std::max(qreal(0.5), sample.diameter / 2);
     const int extent = int(std::ceil(radius)) + 1;
     const QPoint origin(int(std::floor(point.x())) - extent, int(std::floor(point.y())) - extent);
     QImage image(extent * 2 + 1, extent * 2 + 1, paintingFormat(m_document));
@@ -1353,23 +1513,23 @@ void CanvasView::dab(QPointF point) {
             healingBlueDifference = (tb - sb) / samples;
         }
     }
-    const qreal radians = m_brushAngle * std::numbers::pi / 180;
+    const qreal radians = sample.angle * std::numbers::pi / 180;
     const qreal cosine = std::cos(radians), sine = std::sin(radians);
     for (int y = 0; y < image.height(); ++y) {
         auto *row = reinterpret_cast<QRgb *>(image.scanLine(y));
         for (int x = 0; x < image.width(); ++x) {
             const qreal dx = origin.x() + x + 0.5 - point.x(), dy = origin.y() + y + 0.5 - point.y();
-            const qreal bx = dx * cosine + dy * sine, by = (-dx * sine + dy * cosine) / m_roundness;
+            const qreal bx = dx * cosine + dy * sine, by = (-dx * sine + dy * cosine) / sample.roundness;
             const qreal distance = std::sqrt(bx * bx + by * by) / radius;
             if (distance > 1)
                 continue;
             const qreal edge =
                 m_tool == "Pencil"
                     ? 1
-                    : (distance <= m_hardness
+                    : (distance <= sample.hardness
                            ? 1
-                           : std::pow((1 - distance) / std::max(qreal(0.001), 1 - m_hardness), 2));
-            qreal alpha = edge * m_flow * m_opacity * pressure;
+                           : std::pow((1 - distance) / std::max(qreal(0.001), 1 - sample.hardness), 2));
+            qreal alpha = edge * sample.flow * sample.opacity;
             QColor color = m_foreground;
             if (!stamp.isNull())
                 color = stamp.pixelColor(x, y);
@@ -1448,6 +1608,8 @@ void CanvasView::dab(QPointF point) {
                 if (distanceColor > 100)
                     alpha = 0;
             }
+            if (alpha <= 0 || color.alphaF() <= 0)
+                continue;
             const int docX = origin.x() + x, docY = origin.y() + y;
             if (docX < 0 || docY < 0 || docX >= m_document->state.size.width() ||
                 docY >= m_document->state.size.height())
@@ -1459,13 +1621,13 @@ void CanvasView::dab(QPointF point) {
                 coverage = m_strokeCoverage.insert(key, tile);
             }
             const qreal before = maskSample(coverage.value(), docX % 256, docY % 256);
-            const qreal cap = std::min(qreal(1), m_opacity * pressure);
-            const qreal after = std::max(before, before + (cap - before) * edge * m_flow * pressure);
+            const qreal cap = std::min(qreal(1), sample.opacity * color.alphaF());
+            const qreal after = before + std::max(qreal(0), cap - before) * edge * sample.flow;
             const qreal increment = before < 1 ? (after - before) / (1 - before) : 0;
             // Opacity caps a complete gesture; flow controls accumulation between dabs.
-            alpha = std::min(alpha, increment);
+            alpha = increment;
             setMaskSample(coverage.value(), docX % 256, docY % 256, after);
-            color.setAlphaF(std::clamp(color.alphaF() * alpha, qreal(0), qreal(1)));
+            color.setAlphaF(std::clamp(alpha, qreal(0), qreal(1)));
             if (image.depth() > 32)
                 image.setPixelColor(x, y, color);
             else
@@ -1474,12 +1636,9 @@ void CanvasView::dab(QPointF point) {
     }
     applyImage(image, origin, erase);
 }
-void CanvasView::drawStroke(QPointF from, QPointF to) {
-    const qreal distance = QLineF(from, to).length();
-    const qreal spacing = std::max(qreal(1), m_brushSize * m_spacing);
-    const int count = std::max(1, int(std::ceil(distance / spacing)));
-    for (int i = 1; i <= count; ++i)
-        dab(from + (to - from) * (qreal(i) / count));
+void CanvasView::drawStroke(QPointF to) {
+    for (const BrushDab &sample : m_brushDynamics.append({to, m_pressure, m_tabletTilt}))
+        dab(sample);
 }
 
 void CanvasView::mousePressEvent(QMouseEvent *event) {
@@ -1685,7 +1844,7 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
             m_transportMask = m_document->state.selection;
             m_originalPixels = layer->pixels;
             m_strokeSource = m_document->layerImage(*layer);
-            m_initialOffset = effectiveOffset(m_document, *layer);
+            m_transportOrigin = effectiveOffset(m_document, *layer);
             m_transportPreview = m_document->composite();
             for (int y = 0; y < m_transportPreview.height(); ++y)
                 for (int x = 0; x < m_transportPreview.width(); ++x) {
@@ -1754,8 +1913,9 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
     if (m_tool == "Ruler")
         return;
     if (named(m_tool, {"Move", "Path Selection", "Direct Selection"}) || temporaryMove) {
-        if ((m_tool == "Move" || temporaryMove) &&
-            (!property("autoSelect").isValid() || property("autoSelect").toBool())) {
+        const bool moveTool = m_tool == "Move" || temporaryMove;
+        QVector<quint64> chosen = moveTool ? selectedMoveRoots() : QVector<quint64>{};
+        if (moveTool && (!property("autoSelect").isValid() || property("autoSelect").toBool())) {
             for (int i = int(m_document->state.layers.size()) - 1; i >= 0; --i) {
                 const Layer &candidate = m_document->state.layers[i];
                 if (!candidate.visible || candidate.opacity <= 0 || candidate.kind == LayerKind::Group ||
@@ -1803,6 +1963,8 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
                                                                          ? QPointF()
                                                                          : candidate.vectorMaskOffset)))
                     continue;
+                if (!selectedAncestor(m_document, candidate.id, chosen))
+                    chosen = {candidate.id};
                 m_document->setActiveIndex(i);
                 break;
             }
@@ -1812,28 +1974,16 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
             m_dragging = false;
             return;
         }
+        if (chosen.isEmpty())
+            chosen = {layer->id};
+        m_moveLayerIds = selectedLayerRoots(m_document, chosen);
+        m_moveAppliedDelta = {};
+        m_moveMaskOnly = moveTool && m_moveLayerIds.size() == 1 && m_moveLayerIds.first() == layer->id &&
+                         layer->maskTarget && !layer->mask.isNull() && !layer->maskLinked;
         m_moving = true;
-        m_initialOffset = layer->offset;
-        m_initialMaskOffsets.clear();
-        m_initialVectorMaskOffsets.clear();
-        QSet<quint64> moving{layer->id};
-        bool found = true;
-        while (found) {
-            found = false;
-            for (const Layer &candidate : m_document->state.layers)
-                if (moving.contains(candidate.parentId) && !moving.contains(candidate.id)) {
-                    moving.insert(candidate.id);
-                    found = true;
-                }
-        }
-        for (const Layer &candidate : m_document->state.layers)
-            if (moving.contains(candidate.id)) {
-                if (!candidate.maskLinked)
-                    m_initialMaskOffsets.insert(candidate.id, candidate.maskOffset);
-                if (!candidate.vectorMaskLinked)
-                    m_initialVectorMaskOffsets.insert(candidate.id, candidate.vectorMaskOffset);
-            }
-        m_document->beginTransaction("Move layer");
+        m_document->beginTransaction(m_moveMaskOnly              ? "Move layer mask"
+                                     : m_moveLayerIds.size() > 1 ? "Move layers"
+                                                                 : "Move layer");
         return;
     }
     if (paintTool(m_tool)) {
@@ -1856,10 +2006,15 @@ void CanvasView::mousePressEvent(QMouseEvent *event) {
         }
         m_healMask = {};
         m_strokeCoverage.clear();
-        if (event->modifiers().testFlag(Qt::ShiftModifier) && m_hasLastStrokePoint)
-            drawStroke(m_lastStrokePoint, point);
-        else
-            dab(point);
+        const bool straightLine = event->modifiers().testFlag(Qt::ShiftModifier) && m_hasLastStrokePoint;
+        const quint64 seed = property("brushRandomSeed").isValid() ? property("brushRandomSeed").toULongLong()
+                                                                   : QRandomGenerator::global()->generate64();
+        const QPointF first = straightLine ? m_lastStrokePoint : point;
+        for (const BrushDab &sample :
+             m_brushDynamics.begin(brushPreset(), {first, m_pressure, m_tabletTilt}, seed))
+            dab(sample);
+        if (straightLine)
+            drawStroke(point);
     }
     update();
 }
@@ -1966,24 +2121,7 @@ void CanvasView::mouseMoveEvent(QMouseEvent *event) {
             m_document->touch();
         }
     } else if (m_moving) {
-        Layer *layer = m_document->activeLayer();
-        if (layer && !layer->locked && !layer->lockPosition) {
-            QPointF delta = point - m_start;
-            if (event->modifiers().testFlag(Qt::ShiftModifier)) {
-                if (std::abs(delta.x()) > std::abs(delta.y()))
-                    delta.setY(0);
-                else
-                    delta.setX(0);
-            }
-            layer->offset = m_initialOffset + delta;
-            for (Layer &candidate : m_document->state.layers) {
-                if (m_initialMaskOffsets.contains(candidate.id))
-                    candidate.maskOffset = m_initialMaskOffsets[candidate.id] - delta;
-                if (m_initialVectorMaskOffsets.contains(candidate.id))
-                    candidate.vectorMaskOffset = m_initialVectorMaskOffsets[candidate.id] - delta;
-            }
-            m_document->touch();
-        }
+        updateMove(point, event->modifiers());
     } else if (paintTool(m_tool)) {
         QPointF target = point;
         if (event->modifiers().testFlag(Qt::ShiftModifier)) {
@@ -1991,9 +2129,8 @@ void CanvasView::mouseMoveEvent(QMouseEvent *event) {
             target = std::abs(delta.x()) >= std::abs(delta.y()) ? QPointF(point.x(), m_start.y())
                                                                 : QPointF(m_start.x(), point.y());
         }
-        const QPointF smoothed = m_last + (target - m_last) * (1 - m_smoothing * 0.85);
-        drawStroke(m_last, smoothed);
-        m_last = smoothed;
+        drawStroke(target);
+        m_last = target;
         update();
         return;
     } else if (m_tool == "Lasso" || m_tool == "Magnetic Lasso") {
@@ -2058,7 +2195,7 @@ void CanvasView::finishTransport() {
     if (!active || active->locked)
         return;
     const bool contentMove = m_tool == "Content-Aware Move";
-    const QPoint offset = m_initialOffset.toPoint();
+    const QPoint offset = m_transportOrigin.toPoint();
     const QImage localMask =
         paintCoverage(m_strokeSource.size(), m_document->state.bitDepth,
                       [&](QPainter &painter) { painter.drawImage(-offset, m_transportMask); });
@@ -2247,11 +2384,22 @@ void CanvasView::mouseReleaseEvent(QMouseEvent *event) {
         m_document->endTransaction();
         m_pathElement = -1;
     } else if (m_moving) {
-        m_document->endTransaction();
+        if (updateMove(end, event->modifiers()))
+            m_document->endTransaction();
         m_moving = false;
+        m_moveLayerIds.clear();
     } else if (selectionTool(m_tool))
         finishSelection();
     else if (paintTool(m_tool)) {
+        QPointF brushEnd = end;
+        if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+            const QPointF delta = end - m_start;
+            brushEnd = std::abs(delta.x()) >= std::abs(delta.y()) ? QPointF(end.x(), m_start.y())
+                                                                  : QPointF(m_start.x(), end.y());
+        }
+        for (const BrushDab &sample : m_brushDynamics.finish({brushEnd, m_pressure, m_tabletTilt}))
+            dab(sample);
+        m_last = brushEnd;
         if (!m_healMask.isNull()) {
             Layer *layer = m_document->activeLayer();
             if (layer) {
@@ -2404,6 +2552,20 @@ void CanvasView::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    if (nativeBinding && named(m_tool, {"Move", "Artboard", "Path Selection", "Direct Selection"}) &&
+        event->key() >= Qt::Key_Left && event->key() <= Qt::Key_Down &&
+        !event->modifiers().testFlag(Qt::ControlModifier) && !event->modifiers().testFlag(Qt::AltModifier)) {
+        const qreal step = event->modifiers().testFlag(Qt::ShiftModifier) ? 10 : 1;
+        const QPointF delta(event->key() == Qt::Key_Left    ? -step
+                            : event->key() == Qt::Key_Right ? step
+                                                            : 0,
+                            event->key() == Qt::Key_Up     ? -step
+                            : event->key() == Qt::Key_Down ? step
+                                                           : 0);
+        nudgeSelectedLayers(delta);
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_BracketLeft && nativeBinding) {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
             setBrushHardness(m_hardness - .25);
@@ -2463,11 +2625,7 @@ void CanvasView::keyReleaseEvent(QKeyEvent *event) {
 }
 void CanvasView::tabletEvent(QTabletEvent *event) {
     m_pressure = event->pressure();
-    if (std::abs(event->xTilt()) + std::abs(event->yTilt()) > 1) {
-        m_brushAngle = std::atan2(event->yTilt(), event->xTilt()) * 180 / std::numbers::pi;
-        m_roundness =
-            std::clamp(1 - std::hypot(event->xTilt(), event->yTilt()) / 120.0, qreal(0.25), qreal(1));
-    }
+    m_tabletTilt = {qreal(event->xTilt()), qreal(event->yTilt())};
     if (event->type() == QEvent::TabletPress) {
         QMouseEvent mouse(QEvent::MouseButtonPress, event->position(), event->globalPosition(),
                           Qt::LeftButton, Qt::LeftButton, event->modifiers());
@@ -2481,6 +2639,7 @@ void CanvasView::tabletEvent(QTabletEvent *event) {
                           Qt::LeftButton, Qt::NoButton, event->modifiers());
         mouseReleaseEvent(&mouse);
         m_pressure = 1;
+        m_tabletTilt = {};
     }
     event->accept();
 }
@@ -2848,6 +3007,8 @@ QStringList toolNames() {
 }
 
 QIcon toolIcon(const QString &name, QColor color) {
+    if (!color.isValid())
+        color = qApp ? qApp->palette().color(QPalette::Text) : QColor("#FAFAFA");
     QPixmap pixmap(44, 44);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);

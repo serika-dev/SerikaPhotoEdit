@@ -2,7 +2,9 @@
 set -eu
 # Run on the oldest supported glibc target using Qt >=6.8 and linuxdeploy + Qt plugin in PATH.
 workspace=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir=${BUILD_DIR:-"$workspace/build"}
+source_dir=${SOURCE_DIR:-"$workspace"}
+case "$source_dir" in /*) ;; *) source_dir="$workspace/$source_dir" ;; esac
+build_dir=${BUILD_DIR:-"$source_dir/build"}
 app_dir=${APP_DIR:-"$workspace/dist/AppDir"}
 output_dir=${OUTPUT_DIR:-"$workspace/dist"}
 case "$build_dir" in /*) ;; *) build_dir="$workspace/$build_dir" ;; esac
@@ -24,7 +26,10 @@ case "$("$QMAKE" -query QT_VERSION)" in
     *) echo 'AppImage requires a Qt 6 qmake.' >&2; exit 1 ;;
 esac
 command -v linuxdeploy >/dev/null 2>&1 || { echo 'Install linuxdeploy and linuxdeploy-plugin-qt in PATH.' >&2; exit 1; }
+icon="$source_dir/resources/icons/serika-photoedit.png"
+[ -f "$icon" ] || icon="$source_dir/resources/icons/serika-photoedit.svg"
+[ -f "$icon" ] || { echo "Missing application icon in SOURCE_DIR: $source_dir" >&2; exit 1; }
 cmake --install "$build_dir" --prefix "$app_dir/usr"
 mkdir -p "$output_dir"
 cd "$output_dir"
-linuxdeploy --appdir "$app_dir" --plugin qt --desktop-file "$workspace/packaging/linux/io.serika.PhotoEdit.desktop" --icon-file "$workspace/resources/icons/serika-photoedit.svg" --output appimage
+linuxdeploy --appdir "$app_dir" --plugin qt --desktop-file "$source_dir/packaging/linux/io.serika.PhotoEdit.desktop" --icon-file "$icon" --output appimage

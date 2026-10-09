@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Optional OpenGL 3.3 GPU adjustments and Gaussian blur, CPU fallback, persistent preference and device diagnostics.
+- Real LittleCMS ICC CMYK soft proofing, intents/BPC, paper simulation, gamut warnings and 8/16-bit CMYK TIFF/ink separations. Layer editing remains RGB.
+- Editable mixed typography, paragraph metrics, text on paths and shared render/outline layout.
+- Native stdio MCP server with workspace access controls, isolated documents, previews, layers, native saves, atomic actions and undo/redo.
+
+- Serika brand refresh: violet accents, plum and lavender surfaces, bundled Outfit headings and Onest interface text across all four themes.
+- New home screen featuring the supplied PhotoEdit mascot, with matching Windows, Linux and macOS application icons.
+- Theme-aware tool icons, selection controls and preview surfaces, with visible keyboard focus and neutral image surrounds.
+- Multi-layer alignment, distribution, grouping, duplication, deletion and stack ordering, with stable selections and undo.
+- Editable embedded Smart Object documents, linked placement/reload/relink, replacement and export, with retained transforms, masks and Smart Filters.
+- Advanced brush dynamics, deterministic stroke spacing, pressure/tilt controls, stroke previews and saved/imported/exported Serika brush presets.
+- Draggable RGB and per-channel Curves, histogram overlays, numeric point editing and curve presets.
+- Real Pattern Fill layers and five gradient styles with multiple color/opacity stops, plus an editable Gradient Map ramp.
+- Multi-layer Move and keyboard nudging preserve selections and unlinked masks, with gesture cancellation and atomic undo.
+- Windows x64 Release: all 17 suites pass (383 checks; 38 hardware-only cases skipped headlessly). Native AMD GPU run: 44 passed, zero failures, one expected unavailable-device skip. Fourteen UI captures reviewed. These features remain unreleased; current Windows/Linux/macOS CI now requires LittleCMS.
+
 ## 0.0.1 — 2026-10-08
 
 Initial public release under the MIT license, with source and Windows x64 portable ZIP/MSI downloads. The same release also provides verified Linux x86_64/aarch64 tar.gz, AppImage and DEB packages and native macOS Intel/Apple Silicon DMG/ZIP packages, using unchanged v0.0.1 application source.

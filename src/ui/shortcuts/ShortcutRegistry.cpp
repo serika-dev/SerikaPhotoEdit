@@ -173,6 +173,8 @@ QList<ShortcutEntry> ShortcutRegistry::defaultEntries() {
                                                      {"Fit on Screen", "Ctrl+0"},
                                                      {"100%", "Ctrl+1"},
                                                      {"Rulers", "Ctrl+R"},
+                                                     {"Proof Colors", "Ctrl+Y"},
+                                                     {"Gamut Warning", "Ctrl+Shift+Y"},
                                                      {"Guides", "Ctrl+;"},
                                                      {"Grid", "Ctrl+'"},
                                                      {"Extras", "Ctrl+H"},

@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "actions/ActionRunner.h"
+#include "compositor/GpuProcessor.h"
 #include "document/TransformOperations.h"
 #include "io/FormatIO.h"
 #include "tools/LocalAlgorithms.h"
@@ -58,13 +59,22 @@ static QImage alphaImage(const QImage &selection) {
 void MainWindow::runCommand(const QString &name) {
     auto *d = currentDocument();
     auto *c = currentCanvas();
+    if (runTypographyCommand(name) || runProofingCommand(name))
+        return;
+    if (name == "GPU Diagnostics") {
+        QMessageBox::information(this, "GPU processing", GpuProcessor::instance().diagnostics().summary());
+        return;
+    }
     if (m_recording && d &&
-        QStringList{"Duplicate Layer", "New Layer", "Delete Layer", "Merge Down", "Flatten Image",
-                    "Merge Visible", "Convert to Smart Object", "Rasterize Layer", "Add Layer Mask",
-                    "Delete Layer Mask", "Create Clipping Mask", "Flip Horizontal", "Flip Vertical", "All",
-                    "Deselect", "Inverse"}
+        QStringList{"New Layer", "Merge Down", "Flatten Image", "Merge Visible", "Convert to Smart Object",
+                    "Rasterize Layer", "Add Layer Mask", "Delete Layer Mask", "Create Clipping Mask",
+                    "Flip Horizontal", "Flip Vertical", "All", "Deselect", "Inverse"}
             .contains(name))
         recordStep(name);
+    if (runLayerOperation(name))
+        return;
+    if (runSmartObjectCommand(name))
+        return;
     if (name == "New...") {
         newDocument();
         return;
@@ -139,10 +149,12 @@ void MainWindow::runCommand(const QString &name) {
     if (name == "About Serika PhotoEdit") {
         QMessageBox::about(
             this, "About Serika PhotoEdit",
+            "<p><img src=\":/serika/logo.png\" width=\"112\" height=\"112\"></p>"
             "<h2>Serika PhotoEdit</h2><p>0.0.1 · Serika</p><p>Native photo editing. Layers, masks, "
             "RAW, PSD.</p><p>C++20 · Qt " +
                 QString(qVersion()) +
-                " · CPU raster compositor</p><p>Original interface icons. MIT application source.</p>");
+                " · CPU compositor with optional GPU image processing</p><p>Original interface icons. MIT "
+                "application source.</p>");
         return;
     }
     if (name == "Format Support") {
@@ -167,7 +179,8 @@ void MainWindow::runCommand(const QString &name) {
         return;
     }
     if (name == "3D Workspace Information") {
-        QMessageBox::information(this, "3D workspace", "3D editing is not implemented in Serika PhotoEdit 0.0.1.");
+        QMessageBox::information(this, "3D workspace",
+                                 "3D editing is not implemented in Serika PhotoEdit 0.0.1.");
         return;
     }
     if (name == "Neural Filters...") {
@@ -709,6 +722,7 @@ void MainWindow::runCommand(const QString &name) {
             l->pixels.setImage(d->layerImage(*l));
             l->kind = LayerKind::Pixel;
             l->smartFilters = {};
+            l->embeddedDocument.clear();
             l->parameters.remove("contentTransform");
         });
         return;
@@ -729,17 +743,9 @@ void MainWindow::runCommand(const QString &name) {
         d->mutate("Update linked content", [d, image] { d->activeLayer()->pixels.setImage(image); });
         return;
     }
-    if (name == "Solid Color..." || name == "Gradient Fill..." || name == "Pattern Fill...") {
-        auto color = QColorDialog::getColor(m_foreground, this, "Fill color");
-        if (!color.isValid())
-            return;
-        d->mutate("Fill layer", [d, name, color] {
-            d->addLayer(name.left(name.size() - 3),
-                        name == "Solid Color..." ? LayerKind::SolidFill : LayerKind::GradientFill);
-            d->activeLayer()->color = color;
-            d->activeLayer()->parameters =
-                QJsonObject{{"startColor", color.name()}, {"endColor", "#ffffff"}, {"angle", 90}};
-        });
+    if (name == "Solid Color..." || name == "Gradient Fill..." || name == "Pattern Fill..." ||
+        name == "Edit Fill...") {
+        editFill(name);
         return;
     }
     if (name == "All") {
@@ -1143,38 +1149,11 @@ void MainWindow::runCommand(const QString &name) {
         });
         return;
     }
-    if (name == "CMYK" || name == "Lab" || name == "Multichannel") {
+    if (name == "Lab" || name == "Multichannel") {
         QMessageBox::information(
             this, "Color mode",
             "This build edits RGB, Grayscale, Bitmap, and Indexed images. CMYK and Lab documents are "
             "imported through their RGB composite. Native CMYK/Lab editing is not implemented.");
-        return;
-    }
-    if (name == "Edit Text...") {
-        if (layer->kind != LayerKind::Text) {
-            selectTool("Horizontal Type");
-            return;
-        }
-        bool ok;
-        auto text = QInputDialog::getMultiLineText(this, "Edit text", "Text", layer->text, &ok);
-        if (ok)
-            d->mutate("Edit text", [d, text] { d->activeLayer()->text = text; });
-        return;
-    }
-    if (name == "Convert to Shape") {
-        if (layer->kind != LayerKind::Text)
-            return;
-        d->mutate("Convert type to shape", [d] {
-            auto *l = d->activeLayer();
-            QPainterPath path;
-            path.addText(QPointF(0, 0), l->font, l->text);
-            l->shape = path;
-            l->kind = LayerKind::Shape;
-        });
-        return;
-    }
-    if (name == "Convert to Point Text") {
-        showMessage("The active text layer uses point text.");
         return;
     }
     if (name == "Horizontal Orientation" || name == "Vertical Orientation") {
@@ -1304,15 +1283,6 @@ void MainWindow::runCommand(const QString &name) {
         }
         return;
     }
-    if (name == "Auto-Align Layers") {
-        d->mutate("Align layer centers", [d] {
-            for (auto &l : d->state.layers)
-                if (l.kind != LayerKind::Group)
-                    l.offset = QPointF((d->state.size.width() - l.pixels.size.width()) / 2.,
-                                       (d->state.size.height() - l.pixels.size.height()) / 2.);
-        });
-        return;
-    }
     if (name == "Color Settings...") {
         auto path =
             QFileDialog::getOpenFileName(this, "Assign RGB ICC profile", {}, "ICC profiles (*.icc *.icm)");
@@ -1326,12 +1296,6 @@ void MainWindow::runCommand(const QString &name) {
             }
             d->mutate("Assign profile", [d, bytes] { d->state.iccProfile = bytes; });
         }
-        return;
-    }
-    if (name == "Proof Colors" || name == "Gamut Warning") {
-        QMessageBox::information(this, "Color proofing",
-                                 "ICC profiles are preserved and exports can convert to sRGB. CMYK soft "
-                                 "proofing and gamut warning are not implemented in this build.");
         return;
     }
     if (name == "Purge History") {

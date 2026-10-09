@@ -227,15 +227,8 @@ void MainWindow::activateShortcut(const ShortcutEntry &entry, bool released) {
                        local.endsWith("up")     ? -amount
                        : local.endsWith("down") ? amount
                                                 : 0);
-        document->mutate("Nudge layer", [document, offset] {
-            auto *layer = document->activeLayer();
-            if (layer->locked || layer->lockPosition)
-                return;
-            if (layer->maskTarget && !layer->mask.isNull() && !layer->maskLinked)
-                layer->maskOffset += offset;
-            else
-                layer->offset += offset;
-        });
+        if (canvas)
+            canvas->nudgeSelectedLayers(offset);
     } else if (local == "crop-overlay") {
         if (canvas)
             canvas->cycleCropOverlay();

@@ -1,7 +1,10 @@
 #include "MainWindow.h"
 #include "actions/ActionRunner.h"
+#include "compositor/GpuProcessor.h"
 #include "io/FormatIO.h"
 #include "tools/LocalAlgorithms.h"
+#include "ui/dialogs/CurvesEditor.h"
+#include "ui/dialogs/FillEditorDialog.h"
 #include "ui/dialogs/MaskRefineDialog.h"
 #include <QApplication>
 #include <QBoxLayout>
@@ -31,6 +34,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QSet>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -124,6 +128,19 @@ void MainWindow::adjust(const QString &name, bool destructive) {
         return;
     const bool editing = !destructive && d->activeLayer()->kind == LayerKind::Adjustment &&
                          d->activeLayer()->adjustment == name;
+    if (editing) {
+        QSet<quint64> visited;
+        const Layer *layer = d->activeLayer();
+        while (layer && !visited.contains(layer->id)) {
+            visited.insert(layer->id);
+            if (layer->locked) {
+                showMessage("Unlock the adjustment layer and its parent groups before editing it.");
+                return;
+            }
+            const int parent = d->indexForId(layer->parentId);
+            layer = parent < 0 ? nullptr : &d->state.layers[parent];
+        }
+    }
     QJsonObject params = editing ? d->activeLayer()->parameters : QJsonObject();
     if (name == "Invert" || name == "Desaturate" || name == "Auto Tone" || name == "Auto Contrast" ||
         name == "Auto Color" || name == "Equalize") {
@@ -150,6 +167,8 @@ void MainWindow::adjust(const QString &name, bool destructive) {
     auto *form = new QFormLayout;
     v->addLayout(form);
     QHash<QString, QDoubleSpinBox *> values;
+    CurvesEditor *curves = nullptr;
+    QPushButton *gradientEditor = nullptr;
     auto field = [&](QString label, QString key, double min, double max, double def, double step = 1) {
         auto *spin = new QDoubleSpinBox;
         spin->setRange(min, max);
@@ -166,9 +185,11 @@ void MainWindow::adjust(const QString &name, bool destructive) {
         field("Output black", "outputBlack", 0, 255, 0);
         field("Output white", "outputWhite", 0, 255, 255);
     } else if (name == "Curves") {
-        field("Shadows output", "shadows", 0, 255, 64);
-        field("Midtones output", "midtones", 0, 255, 128);
-        field("Highlights output", "highlights", 0, 255, 192);
+        curves = new CurvesEditor;
+        curves->setParameters(params);
+        curves->setSource(d->composite());
+        v->insertWidget(1, curves, 1);
+        dialog.resize(560, 680);
     } else if (name == "Hue/Saturation") {
         field("Hue", "hue", -180, 180, 0);
         field("Saturation", "saturation", -100, 100, 0);
@@ -198,9 +219,13 @@ void MainWindow::adjust(const QString &name, bool destructive) {
         field("Density (%)", "density", 0, 100, 25);
         params["color"] = m_foreground.name();
     } else if (name == "Gradient Map") {
-        params["startColor"] = m_foreground.name();
-        params["endColor"] = m_background.name();
-        form->addRow(new QLabel("Maps luminance from foreground to background color."));
+        if (!editing) {
+            params["start"] = m_foreground.name(QColor::HexArgb);
+            params["end"] = m_background.name(QColor::HexArgb);
+        }
+        gradientEditor = new QPushButton("Edit gradient stops...");
+        form->addRow(gradientEditor);
+        form->addRow(new QLabel("Maps luminance through the gradient, including stop opacity."));
     } else if (name == "Black & White") {
         for (const auto &key : QStringList{"reds", "yellows", "greens", "cyans", "blues", "magentas"})
             field(key, key, -200, 300, 100);
@@ -268,16 +293,26 @@ void MainWindow::adjust(const QString &name, bool destructive) {
                                              {"magenta", values["magenta"]->value()},
                                              {"yellow", values["yellow"]->value()},
                                              {"black", values["black"]->value()}};
-        if (name == "Curves")
-            result["points"] =
-                QJsonArray{QJsonArray{0, 0}, QJsonArray{64, values["shadows"]->value()},
-                           QJsonArray{128, values["midtones"]->value()},
-                           QJsonArray{192, values["highlights"]->value()}, QJsonArray{255, 255}};
+        if (curves)
+            result = curves->parameters();
         return result;
     };
     const auto source = (destructive ? d->layerImage(*d->activeLayer()) : d->composite())
                             .scaled(430, 150, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     auto update = [&] { preview->setPixmap(QPixmap::fromImage(applyAdjustment(source, name, get()))); };
+    if (curves)
+        connect(curves, &CurvesEditor::parametersChanged, &dialog, update);
+    if (gradientEditor)
+        connect(gradientEditor, &QPushButton::clicked, &dialog, [&] {
+            FillEditorDialog editor(LayerKind::GradientFill, params,
+                                    editing ? QColor(Qt::black) : m_foreground,
+                                    editing ? QColor(Qt::white) : m_background, &dialog, true);
+            editor.setWindowTitle("Gradient Map stops");
+            if (editor.exec() == QDialog::Accepted) {
+                params = editor.parameters();
+                update();
+            }
+        });
     for (auto *spin : values)
         connect(spin, &QDoubleSpinBox::valueChanged, &dialog, [&](double) { update(); });
     update();
@@ -624,6 +659,16 @@ void MainWindow::preferences() {
     quality->setValue(m_settings.value("jpegQuality", 92).toInt());
     exportPage->addRow("JPEG / WebP quality", quality);
     auto *perf = page("Performance");
+    const auto gpuInfo = GpuProcessor::instance().diagnostics();
+    auto *gpu = new QCheckBox("Use GPU for supported adjustments and blur");
+    gpu->setObjectName("gpuProcessing");
+    gpu->setChecked(GpuProcessor::instance().enabled());
+    gpu->setEnabled(gpuInfo.available || gpu->isChecked());
+    perf->addRow(gpu);
+    auto *gpuStatus = new QLabel(gpuInfo.summary());
+    gpuStatus->setWordWrap(true);
+    gpuStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    perf->addRow(gpuStatus);
     auto *linear = new QCheckBox("Blend in linear light");
     linear->setChecked(m_settings.value("blendLinear", false).toBool());
     perf->addRow(linear);
@@ -653,7 +698,11 @@ void MainWindow::preferences() {
     plugins->addRow(
         new QLabel("On-device subject selector and neural model interfaces.\nNo neural model installed."));
     auto *technology = page("Technology Previews");
-    technology->addRow(new QLabel("GPU compositor is not enabled in this build."));
+    auto *technologyInfo =
+        new QLabel("GPU image processing is opt-in in Performance. Unsupported operations use the CPU. ICC "
+                   "CMYK proofing and export use a printer profile selected in View > Proof Setup.");
+    technologyInfo->setWordWrap(true);
+    technology->addRow(technologyInfo);
     dialogButtons(dialog, outer);
     if (dialog.exec() != QDialog::Accepted)
         return;
@@ -663,6 +712,8 @@ void MainWindow::preferences() {
     m_settings.setValue("history", states->value());
     m_settings.setValue("jpegQuality", quality->value());
     m_settings.setValue("blendLinear", linear->isChecked());
+    m_settings.setValue("gpuProcessing", gpu->isChecked());
+    GpuProcessor::instance().setEnabled(gpu->isChecked());
     m_settings.setValue("scratch", scratch->text());
     m_settings.setValue("units", unit->currentText());
     m_options->findChild<QSpinBox *>("brushSize")->setValue(brush->value());

@@ -1,4 +1,5 @@
 #include "Document.h"
+#include "SmartObjectOperations.h"
 #include <QBuffer>
 #include <QColorSpace>
 #include <QDataStream>
@@ -697,17 +698,9 @@ void Document::loadMaskSelection(bool vector, const QString &operation) {
         setSelection(coverage, operation);
 }
 void Document::convertToSmartObject() {
-    if (!activeLayer() || activeLayer()->locked || activeLayer()->kind == LayerKind::Group ||
-        activeLayer()->kind == LayerKind::Artboard || activeLayer()->kind == LayerKind::Adjustment)
+    if (!activeLayer() || activeLayer()->kind == LayerKind::SmartObject)
         return;
-    if (activeLayer()->kind == LayerKind::SmartObject)
-        return;
-    const QImage source = layerImage(*activeLayer());
-    mutate("Convert to Smart Object", [&] {
-        activeLayer()->pixels.setImage(source);
-        activeLayer()->kind = LayerKind::SmartObject;
-        activeLayer()->smartFilters = {};
-    });
+    convertLayerToEmbeddedSmartObject(this, activeLayer()->id);
 }
 void Document::addSmartFilter(const QString &name, const QJsonObject &parameters) {
     if (!activeLayer() || activeLayer()->locked)

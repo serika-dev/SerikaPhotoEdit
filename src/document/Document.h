@@ -1,4 +1,5 @@
 #pragma once
+#include <QByteArray>
 #include <QColor>
 #include <QFont>
 #include <QHash>
@@ -21,7 +22,8 @@ enum class LayerKind {
     SolidFill,
     GradientFill,
     SmartObject,
-    Artboard
+    Artboard,
+    PatternFill
 };
 QStringList blendModeNames();
 QStringList adjustmentNames();
@@ -76,6 +78,8 @@ struct Layer {
     QJsonObject parameters;
     QJsonObject effects;
     QString linkedPath;
+    // Native editable contents, or the last loaded snapshot of a linked original.
+    QByteArray embeddedDocument;
     // Smart-object pixels remain the retained source. Filters are evaluated at render time.
     QJsonArray smartFilters;
 };

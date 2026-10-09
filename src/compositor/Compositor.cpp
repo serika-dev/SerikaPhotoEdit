@@ -1,5 +1,8 @@
 #include "../document/Document.h"
+#include "../document/FillRenderer.h"
+#include "../document/TextLayout.h"
 #include "../io/FormatIO.h"
+#include "GpuProcessor.h"
 #include <QColorSpace>
 #include <QFontMetricsF>
 #include <QJsonArray>
@@ -717,32 +720,7 @@ QImage renderLayerImage(const Layer &layer, const QSize &canvas, int bitDepth) {
     p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::TextAntialiasing);
     if (layer.kind == LayerKind::Text) {
-        p.rotate(layer.parameters.value("rotation").toDouble());
-        p.setFont(layer.font);
-        p.setPen(layer.color);
-        if (layer.parameters.value("vertical").toBool()) {
-            const QFontMetricsF metrics(layer.font);
-            qreal x = 0, y = 0;
-            const qreal advance = metrics.height();
-            for (char32_t code : layer.text.toUcs4()) {
-                if (code == '\n') {
-                    x += advance;
-                    y = 0;
-                    continue;
-                }
-                const QString glyph = QString::fromUcs4(&code, 1);
-                p.drawText(QPointF(x, y + metrics.ascent()), glyph);
-                y += advance;
-            }
-        } else {
-            const QString alignment = layer.parameters.value("alignment").toString();
-            p.drawText(QRectF(0, 0, canvas.width(), canvas.height()),
-                       (alignment == "center"  ? Qt::AlignHCenter
-                        : alignment == "right" ? Qt::AlignRight
-                                               : Qt::AlignLeft) |
-                           Qt::AlignTop | Qt::TextWordWrap,
-                       layer.text);
-        }
+        paintTextLayer(p, layer, canvas);
     } else if (layer.kind == LayerKind::Shape) {
         p.setBrush(layer.color);
         p.setPen(layer.stroke.alpha() > 0 ? QPen(layer.stroke, layer.strokeWidth) : QPen(Qt::NoPen));
@@ -750,26 +728,16 @@ QImage renderLayerImage(const Layer &layer, const QSize &canvas, int bitDepth) {
     } else if (layer.kind == LayerKind::SolidFill)
         p.fillRect(image.rect(), layer.color);
     else if (layer.kind == LayerKind::GradientFill) {
-        const double angle = param(layer.parameters, "angle", 0) * 3.141592653589793 / 180.;
-        const QPointF center(canvas.width() / 2., canvas.height() / 2.);
-        const double length =
-            std::abs(canvas.width() * std::cos(angle)) + std::abs(canvas.height() * std::sin(angle));
-        const QPointF delta(std::cos(angle) * length / 2, std::sin(angle) * length / 2);
-        QLinearGradient gradient(center - delta, center + delta);
-        gradient.setColorAt(0, colorParam(layer.parameters, "start", layer.color));
-        gradient.setColorAt(1, colorParam(layer.parameters, "end", Qt::white));
-        for (const auto &value : layer.parameters.value("stops").toArray()) {
-            const auto stop = value.toObject();
-            gradient.setColorAt(clamp(stop.value("position").toDouble()),
-                                colorParam(stop, "color", Qt::black));
-        }
-        p.fillRect(image.rect(), gradient);
-    }
+        p.drawImage(0, 0, renderGradientFill(canvas, bitDepth, layer.parameters, layer.color));
+    } else if (layer.kind == LayerKind::PatternFill)
+        p.drawImage(0, 0, renderPatternFill(canvas, bitDepth, layer.parameters));
     p.end();
     return transformedContent(image);
 }
 
 QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObject &parameters) {
+    if (const auto gpu = GpuProcessor::instance().processAdjustment(source, name, parameters); gpu.usedGpu)
+        return gpu.image;
     if (source.isNull())
         return {};
     const QImage input = normalImage(source);
@@ -817,9 +785,8 @@ QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObj
                green = curvePoints(parameters.value("greenPoints")),
                blue = curvePoints(parameters.value("bluePoints"));
     const std::array<std::vector<QPointF>, 3> channels{red, green, blue};
-    const QColor filter = colorParam(parameters, "color", QColor(236, 150, 60)),
-                 start = colorParam(parameters, "start", Qt::black),
-                 end = colorParam(parameters, "end", Qt::white);
+    const QColor filter = colorParam(parameters, "color", QColor(236, 150, 60));
+    const auto mapStops = name == "Gradient Map" ? gradientStops(parameters) : QGradientStops{};
     const QColor replace = colorParam(parameters, "source", Qt::red),
                  target = colorParam(parameters, "target", Qt::blue);
     const int cubeSize = parameters.value("cubeSize").toInt();
@@ -939,11 +906,9 @@ QImage applyAdjustment(const QImage &source, const QString &name, const QJsonObj
                     lum >= param(parameters, "threshold", param(parameters, "amount", 128)) / 255. ? 1 : 0;
                 c = {value, value, value};
             } else if (name == "Gradient Map") {
-                const Triple a{start.redF(), start.greenF(), start.blueF()},
-                    b{end.redF(), end.greenF(), end.blueF()};
-                double value = parameters.value("reverse").toBool() ? 1 - lum : lum;
-                for (int i = 0; i < 3; ++i)
-                    c[i] = a[i] + (b[i] - a[i]) * value;
+                const auto color = sampleGradient(mapStops, lum);
+                c = {color.redF(), color.greenF(), color.blueF()};
+                p.a *= color.alphaF();
             } else if (name == "Shadows/Highlights" || name == "HDR Toning") {
                 const double shadows = param(parameters, "shadows", name == "HDR Toning" ? 25 : 0) / 100.,
                              highlights =

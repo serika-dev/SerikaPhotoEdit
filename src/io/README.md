@@ -7,6 +7,12 @@ a CRC-32. A checked copy of the JSON header and an end marker detect incomplete 
 `QSaveFile` performs replacement atomically; the native writer flushes the file handle
 before committing. Tile samples use little endian; PSD samples use big endian.
 
+The unreleased source also retains editable Smart Object subdocuments in `SOBD`
+binary chunks and gradient/pattern fill parameters, including embedded PNG tiles.
+Each Smart Object native payload is capped at 512 MB and its envelope/chunk
+checksums are validated without recursively opening all nested objects. Opening
+Edit Contents parses that subdocument through the normal native reader.
+
 PSD/PSB code is independently implemented from the public [Adobe format
 specification](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/).
 RGB, grayscale, duotone, CMYK and Lab input at 8/16/32 bits is supported. The reader
@@ -24,6 +30,11 @@ are additionally stored in private `sPEd` blocks with raster compatibility pixel
 Those fields are editable when reopened in Serika; other editors see their raster
 compatibility form. Native Adobe type-engine, smart-object and effect descriptors are
 not synthesized. Raster mask density and feather are emitted as standard mask parameters; 16-bit and float coverage are retained. Vector mask geometry and smart-filter graphs use Serika private blocks. `sPEi` preserves Serika's model ordering when reopening groups.
+
+Editable native Smart Object contents use the private binary `sPEb` tag in current
+source. This is Serika round-trip data, not an Adobe embedded Smart Object descriptor.
+Gradient and pattern fill edits likewise survive Serika reopen while external
+applications display compatibility pixels.
 
 The PSD reader has a 2 GB whole-file working-memory limit and a 512 MB per-plane
 limit. SPE is streamed chunk by chunk and is not subject to the PSD whole-file limit.
@@ -49,3 +60,12 @@ radii. Noise is deterministic by seed. Median, bilateral/disk blur, unsharp mask
 convolution, morphological filters, geometric resampling, procedural noise and
 Voronoi filters are implemented directly. These are simplified algorithms rather
 than exact reproductions of another editor's proprietary filters.
+
+## ICC CMYK output in current source
+
+The dedicated File → Export → CMYK commands produce actual four-ink 8/16-bit
+TIFF samples through LittleCMS and the selected output ICC profile, or four
+grayscale coverage plates with a profile/manifest. The RGB document is retained.
+This is separate from the normal raster/PSD writer and does not add CMYK PSD
+editing. See [color management](../../docs/COLOR-MANAGEMENT.md) for proofing,
+profile requirements and export limits.
