@@ -64,6 +64,26 @@ jobs:
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSERIKA_WARNINGS_AS_ERRORS=ON -DSERIKA_REQUIRE_CMYK=ON -DCMAKE_PREFIX_PATH="${{ github.workspace }}/.tools/deps/install"
       - run: cmake --build build --parallel 4
       - run: ctest --test-dir build --output-on-failure
+      - name: Print failing QtTest results
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path build/*-results.txt -ErrorAction SilentlyContinue | ForEach-Object {
+            if (Select-String -LiteralPath $_.FullName -Pattern 'FAIL!|QFATAL' -Quiet) {
+              Write-Output "::group::$($_.Name)"
+              Get-Content -LiteralPath $_.FullName
+              Write-Output '::endgroup::'
+            }
+          }
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Test-results-${{ matrix.os }}
+          path: |
+            build/*-results.txt
+            build/Testing/Temporary/*.log
+          if-no-files-found: warn
       - name: Stage executable, Qt runtime, plugins and licenses
         run: cmake --install build --prefix "${{ github.workspace }}/stage"
       - uses: actions/upload-artifact@v4
