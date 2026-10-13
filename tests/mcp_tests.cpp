@@ -543,9 +543,11 @@ class McpTests : public QObject {
                        {"parameters", QJsonObject{{"x", 0}, {"y", 0}, {"width", 400}, {"height", 600}}}},
                    QJsonObject{{"command", "fill"}, {"parameters", QJsonObject{{"color", "#ffc0e0"}}}},
                    QJsonObject{{"command", "deselect"}}}}});
+        // Built with append: Clang reads QJsonArray{QJsonArray{...}} as a copy, not a nested array.
+        QJsonArray panelSafeArea;
+        panelSafeArea.append(QJsonArray{0, 0, 400, 600});
         const auto report =
-            data(call(server, "check_layout",
-                      {{"document_id", id}, {"safe_areas", QJsonArray{QJsonArray{0, 0, 400, 600}}}}));
+            data(call(server, "check_layout", {{"document_id", id}, {"safe_areas", panelSafeArea}}));
         QVERIFY(!report["ok"].toBool());
         const auto text = QJsonDocument(report).toJson();
         QVERIFY(text.contains("crosses the edge"));

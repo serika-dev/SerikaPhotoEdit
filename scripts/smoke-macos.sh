@@ -121,7 +121,11 @@ run_clean() {
     return 1
 }
 run_clean "$output/version.log" "$executable" -platform offscreen --version
-/usr/bin/grep '0.0.1' "$output/version.log" >/dev/null
+# The version is the one in the package name (SerikaPhotoEdit-X.Y.Z-macos-ARCH.zip), matched exactly.
+expected_version=$(basename -- "$package" | /usr/bin/sed -n 's/^SerikaPhotoEdit-\([0-9][0-9.]*\)-.*/\1/p')
+[ -n "$expected_version" ] || { echo "Cannot read the version from $(basename -- "$package")." >&2; exit 1; }
+/usr/bin/grep -Fx "SerikaPhotoEdit $expected_version" "$output/version.log" >/dev/null ||
+    { echo "Expected SerikaPhotoEdit $expected_version; see $output/version.log" >&2; exit 1; }
 run_clean "$output/batch.log" "$executable" --batch "$scratch/action.json" "$scratch/input" "$scratch/output"
 [ -s "$scratch/output/fixture.spe" ] || { echo 'Batch produced no SPE document.' >&2; exit 1; }
 run_clean "$output/reopen-batch.log" "$executable" --batch "$scratch/reopen.json" "$scratch/output" "$scratch/reopened"

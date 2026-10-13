@@ -257,7 +257,12 @@ GpuProcessor::GpuProcessor() {
     m_diagnostics.reason = "This build has no Qt OpenGL processing support.";
 #endif
 }
-GpuProcessor::~GpuProcessor() = default;
+GpuProcessor::~GpuProcessor() {
+    // The singleton outlives QGuiApplication unless shutdown() ran first (tests and tools skip it).
+    // OpenGL objects cannot be released without the application, and the process is exiting anyway.
+    if (!QGuiApplication::instance())
+        (void)m_state.release();
+}
 void GpuProcessor::setEnabled(bool enabled) { m_enabled.store(enabled); }
 bool GpuProcessor::enabled() const { return m_enabled.load(); }
 QStringList GpuProcessor::supportedAdjustments() {
