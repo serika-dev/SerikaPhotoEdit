@@ -65,6 +65,6 @@ without a changelog entry fail CI unless labelled `skip-changelog` (refactors, t
 
 Imperative subject of at most 72 characters ("Read PSD layer records bottom-to-top"), a blank line,
 then a body explaining **why** and what the user sees. Reference issues as
-`serika-dev/SerikaPhotoEdit#123`. Agents add their `Co-Authored-By:` trailer. Commits use the
+`serika-dev/SerikaPhotoEdit#123`. Agents add no `Co-Authored-By:` or "Generated with" lines. Commits use the
 repository-local Git identity (`git config --local user.name` / `user.email`); check it before the
 first commit on a new machine.

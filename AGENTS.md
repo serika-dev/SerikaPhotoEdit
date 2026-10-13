@@ -63,7 +63,8 @@ groups/artboards are the only containers; PSD records on disk are bottom-to-top.
 - Branch from `main` (`fix/…`, `feature/…`); never commit straight to `main` or a `release/X.Y`
   branch, never push, tag or force anything without the maintainer asking.
 - Commits use the repository-local identity (`git config --local user.email`); verify before the
-  first commit. Imperative subject ≤ 72 chars, body says why; end with your `Co-Authored-By:` line.
+  first commit. Imperative subject ≤ 72 chars, body says why. Commits are the maintainer's: no
+  `Co-Authored-By:` or "Generated with" attribution lines in commits or pull requests.
 - Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md` (Keep a
   Changelog sections). `python scripts/release.py check` must pass; releases are cut only with
   `python scripts/release.py cut X.Y.Z` by the maintainer.
