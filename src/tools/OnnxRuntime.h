@@ -15,7 +15,8 @@ struct OrtSessionOptions;
 namespace serika {
 // ONNX Runtime, loaded once per process with QLibrary when an AI feature first needs it. Serika never
 // links it; without the library every AI feature reports what is missing and the rest of the editor
-// is unaffected. ONNX Runtime wants a single environment per process, which this owns.
+// is unaffected. ONNX Runtime wants a single environment per process, which this owns; it lives
+// until the process exits.
 class OnnxRuntime {
   public:
     static OnnxRuntime &instance();

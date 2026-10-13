@@ -94,8 +94,10 @@ bool check(const OrtApi *api, OrtStatus *status, QString *error, const QString &
 } // namespace
 
 OnnxRuntime &OnnxRuntime::instance() {
-    static OnnxRuntime runtime;
-    return runtime;
+    // Never destroyed: the runtime stays loaded until the process ends, and nothing Qt-owned may be
+    // torn down after QCoreApplication during static destruction (QLibrary is a QObject).
+    static auto *runtime = new OnnxRuntime;
+    return *runtime;
 }
 QString OnnxRuntime::libraryFileName() {
 #ifdef Q_OS_WIN

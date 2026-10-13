@@ -3066,8 +3066,8 @@ bool paintLayerGlyph(QPainter &painter, QPen pen, const QString &name, const QCo
         painter.drawPath(folder);
     } else if (name == "layer:new") {
         painter.drawRect(4, 4, 14, 14);
-        painter.drawLine(11, 7.5, 11, 14.5);
-        painter.drawLine(7.5, 11, 14.5, 11);
+        painter.drawLine(QPointF(11, 7.5), QPointF(11, 14.5));
+        painter.drawLine(QPointF(7.5, 11), QPointF(14.5, 11));
     } else if (name == "layer:trash") {
         painter.drawLine(QPointF(4, 6), QPointF(18, 6));
         painter.drawLine(QPointF(9, 6), QPointF(9.5, 3.5));
