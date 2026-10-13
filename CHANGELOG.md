@@ -7,6 +7,7 @@ All notable changes to Serika PhotoEdit are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-13
 ### Added
 
 - AI background removal and subject selection on this computer: BiRefNet (MIT) through ONNX Runtime, loaded only when present, with DirectML GPU acceleration when that runtime is installed. Preferences › AI picks the engine, shows its status and downloads the model with checksum verification.
@@ -75,5 +76,6 @@ Initial public release under the MIT license, with source and Windows x64 portab
 
 See the [0.0.1 release notes](docs/releases/0.0.1.md), [validation record](docs/RELEASE-VALIDATION.md) and [implementation status](docs/IMPLEMENTATION-STATUS.md) for details.
 
-[Unreleased]: https://github.com/serika-dev/SerikaPhotoEdit/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/serika-dev/SerikaPhotoEdit/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/serika-dev/SerikaPhotoEdit/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/serika-dev/SerikaPhotoEdit/releases/tag/v0.0.1

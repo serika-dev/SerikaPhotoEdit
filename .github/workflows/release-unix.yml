@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Existing release tag to compile (packaging comes from this workflow revision)
         required: true
-        default: v0.0.1
+        default: v0.0.2
         type: string
       platforms:
         description: Platforms to package
